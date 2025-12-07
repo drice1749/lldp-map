@@ -1,4 +1,8 @@
+"""Helpers for collecting LLDP data from network devices."""
+
 import re
+from typing import Any, Dict, List
+
 from netmiko import ConnectHandler
 
 # map vendor strings to netmiko device types
@@ -9,19 +13,24 @@ VENDOR_MAP = {
     "fortinet":       "fortinet",
 }
 
-def human_bytes(v):
+def human_bytes(v: str) -> str:
+    """Convert byte counts into a human-readable string when possible."""
+
     try:
         n = int(v.replace(",", ""))
-        if n > 1_000_000_000:
-            return f"{n/1_000_000_000:.2f} GB"
-        elif n > 1_000_000:
-            return f"{n/1000000:.1f} MB"
-        return v
-    except:
+    except (TypeError, ValueError, AttributeError):
         return v
 
+    if n > 1_000_000_000:
+        return f"{n/1_000_000_000:.2f} GB"
+    if n > 1_000_000:
+        return f"{n/1_000_000:.1f} MB"
+    return v
 
-def detect_vendor(output):
+
+def detect_vendor(output: str) -> str:
+    """Infer the vendor from a device banner or command output."""
+
     text = output.lower()
     if "arubaos" in text or "procurve" in text:
         return "arubaos-switch"
@@ -34,8 +43,10 @@ def detect_vendor(output):
     return "arubaos-switch"   # safe fallback
 
 
-def collect_inventory(conn, vendor_key):
-    inv = {}
+def collect_inventory(conn, vendor_key: str) -> Dict[str, Any]:
+    """Gather inventory fields from a connected device."""
+
+    inv: Dict[str, Any] = {}
 
     # ---- show system ----
     try:
@@ -140,7 +151,8 @@ def collect_inventory(conn, vendor_key):
     return inv
 
 
-def collect_lldp(host, username, password):
+def collect_lldp(host: str, username: str, password: str) -> Dict[str, Any]:
+    """Collect inventory and LLDP neighbor data from the target device."""
 
     # connect generically to detect vendor
     base = {
