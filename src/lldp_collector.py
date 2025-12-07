@@ -34,6 +34,85 @@ def detect_vendor(output):
     return "arubaos-switch"   # safe fallback
 
 
+# -------------------------------------------------------------------
+# PARSE TRUNKS (UPDATED to normalize "Trk60 LACP" → "Trk60")
+# -------------------------------------------------------------------
+def parse_aos_trunks(output: str):
+    trunks = []
+    if not output:
+        return trunks
+
+    for line in output.splitlines():
+        if "|" not in line:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 4:
+            continue
+
+        port = parts[0]
+        if not port or not port[0].isdigit():
+            continue
+
+        name = parts[1] or None
+        type_ = parts[2] or None
+
+        raw_group = parts[3] or None
+        group = raw_group.split()[0] if raw_group else None   # <<< normalize
+
+        trunks.append({
+            "port": port,
+            "name": name,
+            "type": type_,
+            "group": group,
+        })
+    return trunks
+
+
+# -------------------------------------------------------------------
+# PARSE LACP
+# -------------------------------------------------------------------
+def parse_aos_lacp(output: str):
+    entries = []
+    if not output:
+        return entries
+
+    for line in output.splitlines():
+        line = line.rstrip()
+        if not line or "Port" in line:
+            continue
+        m = re.match(
+            r"\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)",
+            line
+        )
+        if not m:
+            continue
+        (
+            port,
+            enabled,
+            group,
+            status,
+            partner,
+            partner_status,
+            admin_key,
+            oper_key,
+        ) = m.groups()
+
+        entries.append({
+            "port": port,
+            "lacp_enabled": enabled,
+            "trunk_group": group,
+            "status": status,
+            "partner": partner,
+            "partner_status": partner_status,
+            "admin_key": admin_key,
+            "oper_key": oper_key,
+        })
+    return entries
+
+
+# -------------------------------------------------------------------
+# INVENTORY
+# -------------------------------------------------------------------
 def collect_inventory(conn, vendor_key):
     inv = {}
 
@@ -41,39 +120,32 @@ def collect_inventory(conn, vendor_key):
     try:
         sys_out = conn.send_command("show system")
 
-        # serial
         m = re.search(r"Serial Number\s+:\s*(\S+)", sys_out)
         if m:
             inv["serial"] = m.group(1)
 
-        # base mac
         m = re.search(r"Base MAC Addr\s+:\s*(\S+)", sys_out)
         if m:
             inv["base_mac"] = m.group(1)
 
-        # software
         m = re.search(r"Software revision\s+:\s*([\w\.]+)", sys_out)
         if m:
             inv["software"] = m.group(1)
 
-        # uptime (only the X days portion)
         m = re.search(r"Up Time\s*:\s*([0-9]+\s+days?)", sys_out)
         if m:
             inv["uptime"] = m.group(1).strip()
 
-        # cpu (%)
         m = re.search(r"CPU Util\s*\(\%\)\s*:\s*(\d+)", sys_out)
         if m:
             inv["cpu"] = m.group(1) + "%"
 
-        # memory total
         m = re.search(r"Memory\s*-\s*Total\s*:\s*([\d,]+)", sys_out)
         if m:
             raw_total = m.group(1)
             inv["memory_total"] = raw_total
             inv["memory_total_hr"] = human_bytes(raw_total)
 
-        # memory free
         m = re.search(r"Free\s*:\s*([\d,]+)", sys_out)
         if m:
             raw_free = m.group(1)
@@ -137,12 +209,28 @@ def collect_inventory(conn, vendor_key):
     except Exception as e:
         inv["power_error"] = str(e)
 
+    # ---- NEW: trunk & LACP for ArubaOS-Switch ----
+    if vendor_key == "arubaos-switch":
+        try:
+            tr_raw = conn.send_command("show trunks")
+            inv["trunks"] = parse_aos_trunks(tr_raw)
+        except Exception as e:
+            inv["trunks_error"] = str(e)
+
+        try:
+            lacp_raw = conn.send_command("show lacp")
+            inv["lacp"] = parse_aos_lacp(lacp_raw)
+        except Exception as e:
+            inv["lacp_error"] = str(e)
+
     return inv
 
 
+# -------------------------------------------------------------------
+# MAIN LLDP
+# -------------------------------------------------------------------
 def collect_lldp(host, username, password):
 
-    # connect generically to detect vendor
     base = {
         "device_type": "terminal_server",
         "host": host,
@@ -151,7 +239,6 @@ def collect_lldp(host, username, password):
     }
     conn = ConnectHandler(**base)
 
-    # minimal banner read
     banner = conn.find_prompt()
     try:
         banner += conn.send_command("show version", expect_string=r"#|>")
@@ -164,7 +251,6 @@ def collect_lldp(host, username, password):
 
     print(f"[{host}] Vendor detected: {vendor_key} → {device_type}")
 
-    # reconnect properly
     device = {
         "device_type": device_type,
         "host": host,
