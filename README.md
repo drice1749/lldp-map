@@ -24,6 +24,10 @@ Execute the test suite to verify the helpers and collectors:
 ```bash
 pytest
 ```
+Or use the helper script, which installs dependencies and runs pytest (activates `.venv` if present):
+```bash
+./scripts/run_tests.sh
+```
 
 ## Features
 - LLDP pull via SSH
