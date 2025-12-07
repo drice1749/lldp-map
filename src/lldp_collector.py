@@ -9,6 +9,7 @@ VENDOR_MAP = {
     "fortinet":       "fortinet",
 }
 
+
 def human_bytes(v):
     try:
         n = int(v.replace(",", ""))
@@ -31,88 +32,9 @@ def detect_vendor(output):
         return "cisco_ios"
     if "fortigate" in text or "fortinet" in text:
         return "fortinet"
-    return "arubaos-switch"   # safe fallback
+    return "arubaos-switch"   # fallback
 
 
-# -------------------------------------------------------------------
-# PARSE TRUNKS (UPDATED to normalize "Trk60 LACP" → "Trk60")
-# -------------------------------------------------------------------
-def parse_aos_trunks(output: str):
-    trunks = []
-    if not output:
-        return trunks
-
-    for line in output.splitlines():
-        if "|" not in line:
-            continue
-        parts = [p.strip() for p in line.split("|")]
-        if len(parts) < 4:
-            continue
-
-        port = parts[0]
-        if not port or not port[0].isdigit():
-            continue
-
-        name = parts[1] or None
-        type_ = parts[2] or None
-
-        raw_group = parts[3] or None
-        group = raw_group.split()[0] if raw_group else None   # <<< normalize
-
-        trunks.append({
-            "port": port,
-            "name": name,
-            "type": type_,
-            "group": group,
-        })
-    return trunks
-
-
-# -------------------------------------------------------------------
-# PARSE LACP
-# -------------------------------------------------------------------
-def parse_aos_lacp(output: str):
-    entries = []
-    if not output:
-        return entries
-
-    for line in output.splitlines():
-        line = line.rstrip()
-        if not line or "Port" in line:
-            continue
-        m = re.match(
-            r"\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)",
-            line
-        )
-        if not m:
-            continue
-        (
-            port,
-            enabled,
-            group,
-            status,
-            partner,
-            partner_status,
-            admin_key,
-            oper_key,
-        ) = m.groups()
-
-        entries.append({
-            "port": port,
-            "lacp_enabled": enabled,
-            "trunk_group": group,
-            "status": status,
-            "partner": partner,
-            "partner_status": partner_status,
-            "admin_key": admin_key,
-            "oper_key": oper_key,
-        })
-    return entries
-
-
-# -------------------------------------------------------------------
-# INVENTORY
-# -------------------------------------------------------------------
 def collect_inventory(conn, vendor_key):
     inv = {}
 
@@ -121,35 +43,28 @@ def collect_inventory(conn, vendor_key):
         sys_out = conn.send_command("show system")
 
         m = re.search(r"Serial Number\s+:\s*(\S+)", sys_out)
-        if m:
-            inv["serial"] = m.group(1)
+        if m: inv["serial"] = m.group(1)
 
         m = re.search(r"Base MAC Addr\s+:\s*(\S+)", sys_out)
-        if m:
-            inv["base_mac"] = m.group(1)
+        if m: inv["base_mac"] = m.group(1)
 
         m = re.search(r"Software revision\s+:\s*([\w\.]+)", sys_out)
-        if m:
-            inv["software"] = m.group(1)
+        if m: inv["software"] = m.group(1)
 
         m = re.search(r"Up Time\s*:\s*([0-9]+\s+days?)", sys_out)
-        if m:
-            inv["uptime"] = m.group(1).strip()
+        if m: inv["uptime"] = m.group(1).strip()
 
         m = re.search(r"CPU Util\s*\(\%\)\s*:\s*(\d+)", sys_out)
-        if m:
-            inv["cpu"] = m.group(1) + "%"
+        if m: inv["cpu"] = m.group(1) + "%"
 
         m = re.search(r"Memory\s*-\s*Total\s*:\s*([\d,]+)", sys_out)
         if m:
             raw_total = m.group(1)
-            inv["memory_total"] = raw_total
             inv["memory_total_hr"] = human_bytes(raw_total)
 
         m = re.search(r"Free\s*:\s*([\d,]+)", sys_out)
         if m:
             raw_free = m.group(1)
-            inv["memory_free"] = raw_free
             inv["memory_free_hr"] = human_bytes(raw_free)
 
     except Exception as e:
@@ -160,12 +75,10 @@ def collect_inventory(conn, vendor_key):
         ver_out = conn.send_command("show version")
 
         wc = re.search(r"WC\.\d+\.\d+\.\d+", ver_out)
-        if wc:
-            inv["software"] = wc.group(0)
+        if wc: inv["software"] = wc.group(0)
 
         boot = re.search(r"Boot ROM Version:\s*(\S+)", ver_out)
-        if boot:
-            inv["bootrom"] = boot.group(1)
+        if boot: inv["bootrom"] = boot.group(1)
 
     except Exception as e:
         inv["version_error"] = str(e)
@@ -177,60 +90,79 @@ def collect_inventory(conn, vendor_key):
         if m:
             inv["model"] = m.group(1)
             inv["sku"] = m.group(2)
-    except Exception as e:
-        inv["modules_error"] = str(e)
+    except:
+        pass
 
-    # ---- show power ----
+    # ---- power ----
     try:
         pwr_out = conn.send_command("show power")
 
         m = re.search(r"Total Available Power\s*:\s*([\d\.]+)\s*W", pwr_out)
-        if m:
-            inv["poe_total"] = m.group(1) + " W"
+        if m: inv["poe_total"] = m.group(1) + " W"
 
         m = re.search(r"Total Power Drawn\s*:\s*([\d\.]+)\s*W", pwr_out)
-        if m:
-            inv["poe_used"] = m.group(1) + " W"
+        if m: inv["poe_used"] = m.group(1) + " W"
 
         m = re.search(r"Total Remaining Power\s*:\s*([\d\.]+)\s*W", pwr_out)
-        if m:
-            inv["poe_remaining"] = m.group(1) + " W"
+        if m: inv["poe_remaining"] = m.group(1) + " W"
+    except:
+        pass
 
-        psus = re.findall(r"(\d+)\s+(\d+)\s+([A-Za-z\+ ]+)", pwr_out)
-        if psus:
-            inv["power_supplies"] = []
-            for ps, watts, status in psus:
-                inv["power_supplies"].append({
-                    "psu": ps,
-                    "watts": watts,
-                    "status": status.strip()
+    # ---- TRUNKS ----
+    try:
+        t_out = conn.send_command("show trunks")
+        trunks = []
+        for line in t_out.splitlines():
+            line = line.strip()
+            if not line or not line[0].isdigit():
+                continue
+
+            m_port = re.match(r"(\d+)", line)
+            if not m_port: continue
+            port = m_port.group(1)
+
+            m_grp = re.search(r"\bTrk\d+\b", line)
+            if not m_grp: continue
+            group = m_grp.group(0)
+
+            trunks.append({"port": port, "group": group})
+        if trunks:
+            inv["trunks"] = trunks
+
+    except:
+        pass
+
+    # ---- LACP ----
+    try:
+        lacp_out = conn.send_command("show lacp")
+        lacp = []
+        for line in lacp_out.splitlines():
+            line = line.strip()
+            if not line or not line[0].isdigit():
+                continue
+
+            parts = line.split()
+            if len(parts) >= 8:
+                lacp.append({
+                    "port": parts[0],
+                    "lacp_enabled": parts[1],
+                    "trunk_group": parts[2],
+                    "status": parts[3],
+                    "partner": parts[4],
+                    "partner_status": parts[5],
+                    "admin_key": parts[6],
+                    "oper_key": parts[7],
                 })
-
-    except Exception as e:
-        inv["power_error"] = str(e)
-
-    # ---- NEW: trunk & LACP for ArubaOS-Switch ----
-    if vendor_key == "arubaos-switch":
-        try:
-            tr_raw = conn.send_command("show trunks")
-            inv["trunks"] = parse_aos_trunks(tr_raw)
-        except Exception as e:
-            inv["trunks_error"] = str(e)
-
-        try:
-            lacp_raw = conn.send_command("show lacp")
-            inv["lacp"] = parse_aos_lacp(lacp_raw)
-        except Exception as e:
-            inv["lacp_error"] = str(e)
+        if lacp:
+            inv["lacp"] = lacp
+    except:
+        pass
 
     return inv
 
 
-# -------------------------------------------------------------------
-# MAIN LLDP
-# -------------------------------------------------------------------
 def collect_lldp(host, username, password):
-
+    # vendor detect
     base = {
         "device_type": "terminal_server",
         "host": host,
@@ -238,10 +170,9 @@ def collect_lldp(host, username, password):
         "password": password,
     }
     conn = ConnectHandler(**base)
-
     banner = conn.find_prompt()
     try:
-        banner += conn.send_command("show version", expect_string=r"#|>")
+        banner += conn.send_command("show version")
     except:
         pass
     conn.disconnect()
@@ -251,6 +182,7 @@ def collect_lldp(host, username, password):
 
     print(f"[{host}] Vendor detected: {vendor_key} → {device_type}")
 
+    # proper connection
     device = {
         "device_type": device_type,
         "host": host,
@@ -287,6 +219,10 @@ def collect_lldp(host, username, password):
 
         m = re.search(r"SysName\s*:\s*(.+)$", line)
         if m: current["system_name"] = m.group(1).strip()
+
+        # capture remote port
+        m = re.search(r"PortDescr\s*:\s*(.+)$", line)
+        if m: current["port_descr"] = m.group(1).strip()
 
         if "Address :" in line:
             parts = line.split(":")

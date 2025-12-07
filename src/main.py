@@ -2,54 +2,66 @@ import argparse
 from src.lldp_collector import collect_lldp
 from src.utils import print_table
 
-def print_section(title):
-    print(f"\n--- {title} ---")
 
-def print_power_supplies(inv):
-    if "power_supplies" in inv:
-        print("\npower_supplies:")
-        for ps in inv["power_supplies"]:
-            print(f"   PSU{ps['psu']:>2}: {ps['watts']}W - {ps['status']}")
-
-def print_trunks(inv):
-    trunks = inv.get("trunks", [])
-    if not trunks:
-        return
-    print_section("TRUNKS")
-
-    # group by trunk
-    groups = {}
-    for t in trunks:
-        g = t.get("group") or "Unknown"
-        groups.setdefault(g, []).append(t)
-
-    for grp, items in groups.items():
-        print(f"\n  {grp}:")
-        for item in items:
-            port = item.get("port", "?")
-            name = item.get("name", "") or ""
-            typ  = item.get("type", "")
-            print(f"    Port {port:<3} {name:<20} ({typ})")
-
-
-def print_lacp(inv):
+def print_lacp_detail(inv, neighbors):
     lacp = inv.get("lacp", [])
-    if not lacp:
-        return
-    print_section("LACP")
+    trunks = inv.get("trunks", [])
 
-    groups = {}
-    for entry in lacp:
-        grp = entry.get("trunk_group", "Unknown")
-        groups.setdefault(grp, []).append(entry)
+    trunk_members = {}
+    for t in trunks:
+        grp = t.get("group")
+        if grp:
+            trunk_members.setdefault(grp, []).append(t["port"])
 
-    for grp, items in groups.items():
-        print(f"\n  {grp}:")
-        for e in items:
-            port   = e["port"]
-            status = e["status"]
-            partner = e["partner"]
-            print(f"    Port {port:<3} status:{status:<4} partner:{partner}")
+    neigh_by_port = {}
+    for n in neighbors:
+        p = n.get("local_port")
+        neigh_by_port.setdefault(p, []).append(n)
+
+    print("\n--- LACP ---\n")
+
+    for grp, ports in trunk_members.items():
+        print(f"  {grp}:")
+
+        chk_status = set()
+        chk_partner = set()
+        chk_partner_port = set()
+        lldp_missing_on_up = False
+
+        for p in ports:
+            entry = next((l for l in lacp if l.get("port") == p), {})
+            status = entry.get("status","?")
+            chk_status.add(status)
+
+            partner = "unknown"
+            partner_port = "unknown"
+
+            if p in neigh_by_port:
+                n = neigh_by_port[p][0]
+                sysname = n.get("system_name","?")
+                chassis = n.get("chassis_id","?")
+                partner = f"{sysname} ({chassis})"
+                partner_port = n.get("port_descr") or "?"
+            else:
+                # LLDP missing
+                if status.lower() == "up":
+                    lldp_missing_on_up = True
+
+            chk_partner.add(partner)
+            chk_partner_port.add(partner_port)
+
+            print(f"    Port {p:<3} status:{status:<4} partner:{partner}   port:{partner_port}")
+
+        # mismatch
+        if len(chk_partner) > 1 or len(chk_partner_port) > 1 or len(chk_status) > 1:
+            print("      ⚠ WARNING: LACP link mismatch detected")
+
+        # LLDP missing
+        if lldp_missing_on_up:
+            print("      ⚠ WARNING: LLDP missing on active LACP member (best practice to enable)")
+
+        print()
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -65,39 +77,39 @@ def main():
     print("       INVENTORY        ")
     print("========================")
 
-    # ---- SYSTEM ----
-    print_section("SYSTEM")
+    # SYSTEM
+    print("\n--- SYSTEM ---")
     for key in ["serial", "base_mac", "software", "bootrom", "uptime", "cpu"]:
         if key in inv:
             print(f"{key:15}: {inv[key]}")
 
-    # ---- MEMORY ----
-    print_section("MEMORY")
+    print("\n--- MEMORY ---")
     if "memory_total_hr" in inv:
         print(f"{'total':15}: {inv['memory_total_hr']}")
     if "memory_free_hr" in inv:
         print(f"{'free':15}: {inv['memory_free_hr']}")
 
-    # ---- HARDWARE / MODEL ----
-    print_section("HARDWARE")
+    print("\n--- HARDWARE ---")
     for key in ["model", "sku"]:
         if key in inv:
             print(f"{key:15}: {inv[key]}")
 
-    # ---- POWER ----
-    print_section("POWER")
+    print("\n--- POWER ---")
     for key in ["poe_total", "poe_used", "poe_remaining"]:
         if key in inv:
             print(f"{key:15}: {inv[key]}")
-    print_power_supplies(inv)
 
-    # ---- TRUNKS + LACP (pretty) ----
-    print_trunks(inv)
-    print_lacp(inv)
+    if "power_supplies" in inv:
+        print("\npower_supplies:")
+        for ps in inv["power_supplies"]:
+            print(f"   PSU{ps['psu']}: {ps['watts']}W - {ps['status']}")
 
-    # ---- NEIGHBORS ----
-    print()
+    # New LACP output with warnings
+    print_lacp_detail(inv, results["neighbors"])
+
+    # LLDP neighbors table
     print_table(results["neighbors"])
+
 
 if __name__ == "__main__":
     main()
