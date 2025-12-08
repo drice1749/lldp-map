@@ -38,7 +38,7 @@ def detect_vendor(output):
 def collect_inventory(conn, vendor_key):
     inv = {}
 
-    # ---- show system ----
+    # ---- SYSTEM ----
     try:
         sys_out = conn.send_command("show system")
 
@@ -59,18 +59,16 @@ def collect_inventory(conn, vendor_key):
 
         m = re.search(r"Memory\s*-\s*Total\s*:\s*([\d,]+)", sys_out)
         if m:
-            raw_total = m.group(1)
-            inv["memory_total_hr"] = human_bytes(raw_total)
+            inv["memory_total_hr"] = human_bytes(m.group(1))
 
         m = re.search(r"Free\s*:\s*([\d,]+)", sys_out)
         if m:
-            raw_free = m.group(1)
-            inv["memory_free_hr"] = human_bytes(raw_free)
+            inv["memory_free_hr"] = human_bytes(m.group(1))
 
     except Exception as e:
         inv["system_error"] = str(e)
 
-    # ---- show version ----
+    # ---- VERSION ----
     try:
         ver_out = conn.send_command("show version")
 
@@ -83,7 +81,7 @@ def collect_inventory(conn, vendor_key):
     except Exception as e:
         inv["version_error"] = str(e)
 
-    # ---- show modules ----
+    # ---- MODULES ----
     try:
         mod_out = conn.send_command("show modules")
         m = re.search(r"Chassis:\s*([A-Za-z0-9\-+]+)\s+(\S+)", mod_out)
@@ -93,7 +91,7 @@ def collect_inventory(conn, vendor_key):
     except:
         pass
 
-    # ---- power ----
+    # ---- POWER ----
     try:
         pwr_out = conn.send_command("show power")
 
@@ -108,55 +106,70 @@ def collect_inventory(conn, vendor_key):
     except:
         pass
 
-    # ---- TRUNKS ----
+    # ---- TRUNKS (fix: accept A1/B23/etc) ----
     try:
         t_out = conn.send_command("show trunks")
         trunks = []
         for line in t_out.splitlines():
             line = line.strip()
-            if not line or not line[0].isdigit():
+            if not line:
                 continue
 
-            m_port = re.match(r"(\d+)", line)
-            if not m_port: continue
-            port = m_port.group(1)
+            parts = line.split()
+            if len(parts) < 2:
+                continue
 
+            port = parts[0]                 # may be A1, B23, etc
             m_grp = re.search(r"\bTrk\d+\b", line)
-            if not m_grp: continue
-            group = m_grp.group(0)
+            if not m_grp:
+                continue
 
-            trunks.append({"port": port, "group": group})
+            trunks.append({"port": port, "group": m_grp.group(0)})
+
         if trunks:
             inv["trunks"] = trunks
 
     except:
         pass
 
-    # ---- LACP ----
+    # ---- LACP (ArubaOS-Switch format) ----
     try:
         lacp_out = conn.send_command("show lacp")
         lacp = []
+        in_table = False
+
         for line in lacp_out.splitlines():
             line = line.strip()
-            if not line or not line[0].isdigit():
+            if not line:
+                continue
+
+            # dashed line → start of table body
+            if re.match(r"^-{3,}", line):
+                in_table = True
+                continue
+
+            if not in_table:
                 continue
 
             parts = line.split()
             if len(parts) >= 8:
+                port, enabled, group, status, partner, partner_status, admin_key, oper_key = parts[:8]
                 lacp.append({
-                    "port": parts[0],
-                    "lacp_enabled": parts[1],
-                    "trunk_group": parts[2],
-                    "status": parts[3],
-                    "partner": parts[4],
-                    "partner_status": parts[5],
-                    "admin_key": parts[6],
-                    "oper_key": parts[7],
+                    "port": port,
+                    "lacp_enabled": enabled,
+                    "trunk_group": group,
+                    "status": status,
+                    "partner": partner,
+                    "partner_status": partner_status,
+                    "admin_key": admin_key,
+                    "oper_key": oper_key,
                 })
+
         if lacp:
             inv["lacp"] = lacp
-    except:
-        pass
+
+    except Exception as e:
+        inv["lacp_error"] = str(e)
 
     return inv
 
