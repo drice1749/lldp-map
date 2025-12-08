@@ -25,7 +25,6 @@ def print_lacp_detail(inv, neighbors):
 
         chk_status = set()
         chk_partner = set()
-        chk_partner_port = set()
         lldp_missing_on_up = False
 
         for p in ports:
@@ -48,15 +47,19 @@ def print_lacp_detail(inv, neighbors):
                     lldp_missing_on_up = True
 
             chk_partner.add(partner)
-            chk_partner_port.add(partner_port)
 
+            # Always show partner port (even if different)
             print(f"    Port {p:<3} status:{status:<4} partner:{partner}   port:{partner_port}")
 
-        # mismatch
-        if len(chk_partner) > 1 or len(chk_partner_port) > 1 or len(chk_status) > 1:
+        # TRUE mismatch logic:
+        # Warn only if:
+        #   1) a link is down
+        #   OR
+        #   2) partner SYSTEM differs
+        if ("Down" in chk_status) or len(chk_partner) > 1:
             print("      ⚠ WARNING: LACP link mismatch detected")
 
-        # LLDP missing
+        # LLDP missing only matters if link is Up
         if lldp_missing_on_up:
             print("      ⚠ WARNING: LLDP missing on active LACP member (best practice to enable)")
 
@@ -104,7 +107,7 @@ def main():
         for ps in inv["power_supplies"]:
             print(f"   PSU{ps['psu']}: {ps['watts']}W - {ps['status']}")
 
-    # New LACP output with warnings
+    # New LACP output with improved warnings
     print_lacp_detail(inv, results["neighbors"])
 
     # LLDP neighbors table
@@ -113,3 +116,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
