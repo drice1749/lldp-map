@@ -1,4 +1,8 @@
+"""Helpers for collecting LLDP data from network devices."""
+
 import re
+from typing import Any, Dict, List
+
 from netmiko import ConnectHandler
 
 # map vendor strings to netmiko device types
@@ -9,19 +13,33 @@ VENDOR_MAP = {
     "fortinet":       "fortinet",
 }
 
-def human_bytes(v):
+def human_bytes(v: str) -> str:
+    """Convert byte counts into a human-readable string when possible."""
+
     try:
         n = int(v.replace(",", ""))
+<<<<<<< Updated upstream
+    except (TypeError, ValueError, AttributeError):
+=======
         if n > 1_000_000_000:
             return f"{n/1_000_000_000:.2f} GB"
         elif n > 1_000_000:
-            return f"{n/1000000:.1f} MB"
+            return f"{n/1_000_000:.1f} MB"
         return v
     except:
+>>>>>>> Stashed changes
         return v
 
+    if n > 1_000_000_000:
+        return f"{n/1_000_000_000:.2f} GB"
+    if n > 1_000_000:
+        return f"{n/1_000_000:.1f} MB"
+    return v
 
-def detect_vendor(output):
+
+def detect_vendor(output: str) -> str:
+    """Infer the vendor from a device banner or command output."""
+
     text = output.lower()
     if "arubaos" in text or "procurve" in text:
         return "arubaos-switch"
@@ -34,8 +52,10 @@ def detect_vendor(output):
     return "arubaos-switch"   # safe fallback
 
 
-def collect_inventory(conn, vendor_key):
-    inv = {}
+def collect_inventory(conn, vendor_key: str) -> Dict[str, Any]:
+    """Gather inventory fields from a connected device."""
+
+    inv: Dict[str, Any] = {}
 
     # ---- show system ----
     try:
@@ -124,6 +144,7 @@ def collect_inventory(conn, vendor_key):
         if m:
             inv["poe_remaining"] = m.group(1) + " W"
 
+        # detected power supplies from "show power" block
         psus = re.findall(r"(\d+)\s+(\d+)\s+([A-Za-z\+ ]+)", pwr_out)
         if psus:
             inv["power_supplies"] = []
@@ -137,10 +158,54 @@ def collect_inventory(conn, vendor_key):
     except Exception as e:
         inv["power_error"] = str(e)
 
+    # ---- show system power-supply ----
+    try:
+        ps_out = conn.send_command("show system power-supply")
+
+        m = re.search(r"Currently supplying\s+(\d+)\s*W\s*/\s*(\d+)\s*W", ps_out)
+        if m:
+            inv["psu_used"] = m.group(1) + " W"
+            inv["psu_capacity"] = m.group(2) + " W"
+
+        supplies = []
+        for line in ps_out.splitlines():
+            m = re.search(
+                r"^\s*(\d+)\s+(\S*)\s+(\S*)\s+(\S+)\s+(?:\S+\s+)?(\d+)\s+(\d+)",
+                line
+            )
+            if m:
+                supplies.append({
+                    "psu": m.group(1),
+                    "model": m.group(2),
+                    "serial": m.group(3),
+                    "state": m.group(4),
+                    "power": m.group(5) + " W",
+                    "max": m.group(6) + " W"
+                })
+        if supplies:
+            inv["psu_detail"] = supplies
+
+    except Exception as e:
+        inv["ps_error"] = str(e)
+
+    # ---- temperature ----
+    try:
+        temp_out = conn.send_command("show system temperature")
+        m = re.search(r"Chassis\s+(\d+)C\s+(\d+)C\s+(\d+)C\s+(\d+)C\s+(\S+)", temp_out)
+        if m:
+            inv["temp_current"] = m.group(1) + "C"
+            inv["temp_max"]     = m.group(2) + "C"
+            inv["temp_min"]     = m.group(3) + "C"
+            inv["temp_threshold"] = m.group(4) + "C"
+            inv["temp_alarm"]     = "YES" if m.group(5).upper() != "NO" else "NO"
+    except Exception as e:
+        inv["temp_error"] = str(e)
+
     return inv
 
 
-def collect_lldp(host, username, password):
+def collect_lldp(host: str, username: str, password: str) -> Dict[str, Any]:
+    """Collect inventory and LLDP neighbor data from the target device."""
 
     # connect generically to detect vendor
     base = {
