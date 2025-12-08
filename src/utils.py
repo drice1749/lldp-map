@@ -10,3 +10,4 @@ def print_table(results):
             print(f"{local} → {sysname} ({chassis})  mgmt:{mgmt}")
         else:
             print(f"{local} → {sysname} ({chassis})")
+

@@ -42,28 +42,66 @@ def print_lacp_detail(inv, neighbors):
                 partner = f"{sysname} ({chassis})"
                 partner_port = n.get("port_descr") or "?"
             else:
-                # LLDP missing
                 if status.lower() == "up":
                     lldp_missing_on_up = True
 
             chk_partner.add(partner)
-
-            # Always show partner port (even if different)
             print(f"    Port {p:<3} status:{status:<4} partner:{partner}   port:{partner_port}")
 
-        # TRUE mismatch logic:
-        # Warn only if:
-        #   1) a link is down
-        #   OR
-        #   2) partner SYSTEM differs
         if ("Down" in chk_status) or len(chk_partner) > 1:
             print("      ⚠ WARNING: LACP link mismatch detected")
 
-        # LLDP missing only matters if link is Up
         if lldp_missing_on_up:
             print("      ⚠ WARNING: LLDP missing on active LACP member (best practice to enable)")
 
         print()
+
+
+def print_vlan_summary(inv):
+    if "vlans_detail" not in inv:
+        return
+
+    print("\n========================")
+    print("       VLAN SUMMARY     ")
+    print("========================")
+
+    for vlan_id, vlan in sorted(inv["vlans_detail"].items(), key=lambda x:int(x[0])):
+        name = vlan.get("name") or ""
+        ip   = vlan.get("ip") or "—"
+        role = "L3" if vlan.get("l3") else "L2 only"
+
+        print(f"\nVLAN {vlan_id:<4} {name}")
+        print(f"   IP/Subnet : {ip}")
+        print(f"   Role      : {role}")
+
+        untagged = vlan.get("untagged", [])
+        tagged   = vlan.get("tagged", [])
+
+        print("   Untagged  :", ", ".join(sorted(untagged)) if untagged else "—")
+        print("   Tagged    :", ", ".join(sorted(tagged))   if tagged   else "—")
+
+
+def print_port_vlan_table(inv):
+    if "port_vlans" not in inv:
+        return
+
+    print("\n========================")
+    print("     PORT VLAN TABLE    ")
+    print("========================\n")
+
+    def sort_key(p):
+        prefix = p[0]
+        num = p[1:]
+        try:
+            return (prefix, int(num))
+        except:
+            return (prefix, 999)
+
+    for port in sorted(inv["port_vlans"].keys(), key=sort_key):
+        cfg = inv["port_vlans"][port]
+        untag = cfg.get("untagged") or "—"
+        tagged = ", ".join(sorted(cfg.get("tagged", []))) or "—"
+        print(f"{port:<8}  untagged:{untag:<6}   tagged:{tagged}")
 
 
 def main():
@@ -80,7 +118,6 @@ def main():
     print("       INVENTORY        ")
     print("========================")
 
-    # SYSTEM
     print("\n--- SYSTEM ---")
     for key in ["serial", "base_mac", "software", "bootrom", "uptime", "cpu"]:
         if key in inv:
@@ -102,15 +139,12 @@ def main():
         if key in inv:
             print(f"{key:15}: {inv[key]}")
 
-    if "power_supplies" in inv:
-        print("\npower_supplies:")
-        for ps in inv["power_supplies"]:
-            print(f"   PSU{ps['psu']}: {ps['watts']}W - {ps['status']}")
-
-    # New LACP output with improved warnings
     print_lacp_detail(inv, results["neighbors"])
 
-    # LLDP neighbors table
+    print_vlan_summary(inv)
+
+    print_port_vlan_table(inv)
+
     print_table(results["neighbors"])
 
 

@@ -1,4 +1,5 @@
 import re
+import ipaddress
 from netmiko import ConnectHandler
 
 # map vendor strings to netmiko device types
@@ -20,6 +21,33 @@ def human_bytes(v):
         return v
     except:
         return v
+
+
+def mask_to_cidr(mask):
+    try:
+        return ipaddress.IPv4Network(f"0.0.0.0/{mask}").prefixlen
+    except:
+        return None
+
+
+def expand_ports(text):
+    result = []
+    parts = text.split(",")
+    for part in parts:
+        part = part.strip()
+        if "-" in part:
+            start, end = part.split("-")
+            prefix = start[0]
+            try:
+                s = int(start[1:])
+                e = int(end[1:])
+                for x in range(s, e+1):
+                    result.append(f"{prefix}{x}")
+            except:
+                continue
+        else:
+            result.append(part)
+    return result
 
 
 def detect_vendor(output):
@@ -106,7 +134,7 @@ def collect_inventory(conn, vendor_key):
     except:
         pass
 
-    # ---- TRUNKS (alpha port support) ----
+    # ---- TRUNKS ----
     try:
         t_out = conn.send_command("show trunks")
         trunks = []
@@ -119,20 +147,18 @@ def collect_inventory(conn, vendor_key):
             if len(parts) < 2:
                 continue
 
-            port = parts[0]  # A1/B23/etc
+            port = parts[0]
             m_grp = re.search(r"\bTrk\d+\b", line)
             if not m_grp:
                 continue
 
             trunks.append({"port": port, "group": m_grp.group(0)})
-
         if trunks:
             inv["trunks"] = trunks
-
     except:
         pass
 
-    # ---- LACP (ArubaOS-Switch)----
+    # ---- LACP ----
     try:
         lacp_out = conn.send_command("show lacp")
         lacp = []
@@ -163,12 +189,72 @@ def collect_inventory(conn, vendor_key):
                     "admin_key": admin_key,
                     "oper_key": oper_key,
                 })
-
         if lacp:
             inv["lacp"] = lacp
-
     except Exception as e:
         inv["lacp_error"] = str(e)
+
+    # ---- VLAN + PORT VLAN PARSING ----
+    try:
+        rc = conn.send_command("show running-config")
+        inv["vlans_detail"] = {}
+        inv["port_vlans"] = {}
+        current_vlan = None
+
+        for line in rc.splitlines():
+            line = line.rstrip()
+
+            m_vlan = re.match(r"^vlan\s+(\d+)", line)
+            if m_vlan:
+                current_vlan = m_vlan.group(1)
+                inv["vlans_detail"].setdefault(current_vlan, {
+                    "name": None,
+                    "ip": None,
+                    "untagged": [],
+                    "tagged": [],
+                    "l3": False,
+                    "l2_only": True,
+                })
+                continue
+
+            if not current_vlan:
+                continue
+
+            # name
+            m = re.search(r'name\s+"(.+)"', line)
+            if m:
+                inv["vlans_detail"][current_vlan]["name"] = m.group(1)
+
+            # ip address
+            m = re.search(r'ip address\s+(\S+)\s+(\S+)', line)
+            if m:
+                ip = m.group(1)
+                mask = m.group(2)
+                cidr = mask_to_cidr(mask)
+                inv["vlans_detail"][current_vlan]["ip"] = f"{ip}/{cidr}" if cidr else ip
+                inv["vlans_detail"][current_vlan]["l3"] = True
+                inv["vlans_detail"][current_vlan]["l2_only"] = False
+
+            # untagged
+            m = re.search(r'untagged\s+(.+)$', line)
+            if m:
+                ports = expand_ports(m.group(1))
+                for p in ports:
+                    inv["vlans_detail"][current_vlan]["untagged"].append(p)
+                    inv["port_vlans"].setdefault(p, {"tagged":[], "untagged":None})
+                    inv["port_vlans"][p]["untagged"] = current_vlan
+
+            # tagged
+            m = re.search(r'tagged\s+(.+)$', line)
+            if m:
+                ports = expand_ports(m.group(1))
+                for p in ports:
+                    inv["vlans_detail"][current_vlan]["tagged"].append(p)
+                    inv["port_vlans"].setdefault(p, {"tagged":[], "untagged":None})
+                    inv["port_vlans"][p]["tagged"].append(current_vlan)
+
+    except Exception as e:
+        inv["vlan_error"] = str(e)
 
     return inv
 
@@ -235,7 +321,6 @@ def collect_lldp(host, username, password):
         m = re.search(r"PortDescr\s*:\s*(.+)$", line)
         if m: current["port_descr"] = m.group(1).strip()
 
-        # -------- IPv4 mgmt fix ----------
         if line.startswith("Type") and "ipv4" in line.lower():
             current["_next_addr_is_ipv4"] = True
             continue
@@ -245,7 +330,6 @@ def collect_lldp(host, username, password):
             if len(parts) > 1:
                 current["mgmt_ip"] = parts[1].strip()
             current.pop("_next_addr_is_ipv4", None)
-        # ----------------------------------
 
     if current:
         neighbors.append(current)
