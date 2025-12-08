@@ -106,7 +106,7 @@ def collect_inventory(conn, vendor_key):
     except:
         pass
 
-    # ---- TRUNKS (fix: accept A1/B23/etc) ----
+    # ---- TRUNKS (alpha port support) ----
     try:
         t_out = conn.send_command("show trunks")
         trunks = []
@@ -119,7 +119,7 @@ def collect_inventory(conn, vendor_key):
             if len(parts) < 2:
                 continue
 
-            port = parts[0]                 # may be A1, B23, etc
+            port = parts[0]  # A1/B23/etc
             m_grp = re.search(r"\bTrk\d+\b", line)
             if not m_grp:
                 continue
@@ -132,7 +132,7 @@ def collect_inventory(conn, vendor_key):
     except:
         pass
 
-    # ---- LACP (ArubaOS-Switch format) ----
+    # ---- LACP (ArubaOS-Switch)----
     try:
         lacp_out = conn.send_command("show lacp")
         lacp = []
@@ -143,7 +143,6 @@ def collect_inventory(conn, vendor_key):
             if not line:
                 continue
 
-            # dashed line → start of table body
             if re.match(r"^-{3,}", line):
                 in_table = True
                 continue
@@ -233,16 +232,23 @@ def collect_lldp(host, username, password):
         m = re.search(r"SysName\s*:\s*(.+)$", line)
         if m: current["system_name"] = m.group(1).strip()
 
-        # capture remote port
         m = re.search(r"PortDescr\s*:\s*(.+)$", line)
         if m: current["port_descr"] = m.group(1).strip()
 
-        if "Address :" in line:
+        # -------- IPv4 mgmt fix ----------
+        if line.startswith("Type") and "ipv4" in line.lower():
+            current["_next_addr_is_ipv4"] = True
+            continue
+
+        if line.startswith("Address") and current.get("_next_addr_is_ipv4"):
             parts = line.split(":")
             if len(parts) > 1:
                 current["mgmt_ip"] = parts[1].strip()
+            current.pop("_next_addr_is_ipv4", None)
+        # ----------------------------------
 
     if current:
         neighbors.append(current)
 
     return {"inventory": inventory, "neighbors": neighbors}
+
