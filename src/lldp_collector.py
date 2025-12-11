@@ -139,7 +139,7 @@ def collect_inventory(conn, vendor_key):
         trunks = []
         for line in t_out.splitlines():
             line = line.strip()
-            if not line:
+            if not line: 
                 continue
 
             parts = line.split()
@@ -278,7 +278,10 @@ def collect_lldp(host, username, password):
     device_type = VENDOR_MAP.get(vendor_key, "hp_procurve")
 
     # PRETTY VENDOR DETECTION
-    console.print(f"[bold cyan][{host}][/bold cyan] Vendor detected: [yellow]{vendor_key}[/yellow] → [green]{device_type}[/green]")
+    console.print(
+        f"[bold cyan][{host}][/bold cyan] Vendor detected: "
+        f"[yellow]{vendor_key}[/yellow] → [green]{device_type}[/green]"
+    )
 
     # Connect for real work
     device = {
@@ -318,22 +321,30 @@ def collect_lldp(host, username, password):
 
         m = re.search(r"ChassisId\s*:\s*(\S+)", line)
         if m:
+            current["mac"] = m.group(1)
             current["chassis_id"] = m.group(1)
 
         m = re.search(r"SysName\s*:\s*(.+)$", line)
         if m:
             current["system_name"] = m.group(1).strip()
 
-        m = re.search(r"PortDescr\s*:\s*(.+)$", line)
+        m = re.search(r"PortDescr\s*:\s*(.*)$", line)
         if m:
-            current["port_descr"] = m.group(1).strip()
+            desc = m.group(1).strip()
+            if desc:
+                current["remote_port"] = desc
 
-        # LLDP mgmt IP handling
+        m = re.search(r"PortId\s*:\s*(.*)$", line)
+        if m:
+            pid = m.group(1).strip()
+            if pid:
+                current.setdefault("remote_port", pid)
+
         if line.startswith("Type") and "ipv4" in line.lower():
             current["_next_addr_is_ipv4"] = True
             continue
 
-        if line.startswith("Address") and current.get("_next_addr_is_ipv4"):
+        if current.get("_next_addr_is_ipv4") and line.startswith("Address"):
             parts = line.split(":")
             if len(parts) > 1:
                 current["mgmt_ip"] = parts[1].strip()
@@ -341,5 +352,7 @@ def collect_lldp(host, username, password):
 
     if current:
         neighbors.append(current)
+
+    neighbors.sort(key=lambda x: int(x.get("local_port", "9999")))
 
     return {"inventory": inventory, "neighbors": neighbors}

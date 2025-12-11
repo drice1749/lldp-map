@@ -12,13 +12,8 @@ from src.utils import (
 
 
 def format_inventory(inv):
-    """
-    Pretty-print inventory sections using Rich tables.
-    """
-
     section("INVENTORY")
 
-    # ---------------- SYSTEM -----------------
     system_fields = {
         "Serial": inv.get("serial"),
         "Base MAC": inv.get("base_mac"),
@@ -29,21 +24,18 @@ def format_inventory(inv):
     }
     kv_table("System", system_fields)
 
-    # ---------------- MEMORY -----------------
     memory_fields = {
         "Total": inv.get("memory_total_hr"),
         "Free": inv.get("memory_free_hr"),
     }
     kv_table("Memory", memory_fields)
 
-    # ---------------- HARDWARE -----------------
     hardware_fields = {
         "Model": inv.get("model"),
         "SKU": inv.get("sku"),
     }
     kv_table("Hardware", hardware_fields)
 
-    # ---------------- POWER -----------------
     power_fields = {
         "PoE Total": inv.get("poe_total"),
         "Used": inv.get("poe_used"),
@@ -53,9 +45,6 @@ def format_inventory(inv):
 
 
 def format_vlan_summary(inv):
-    """
-    Pretty VLAN summary using utils.vlan_block()
-    """
     if "vlans_detail" not in inv:
         return
 
@@ -82,13 +71,9 @@ def format_port_vlan_table(inv):
 
 
 def format_lacp(inv, neighbors):
-    """
-    Convert your existing LACP logic into structured data for pretty-printing.
-    """
     lacp_entries = inv.get("lacp", [])
     trunks = inv.get("trunks", [])
 
-    # Build trunk group → members list
     lacp_struct = {}
 
     for t in trunks:
@@ -101,7 +86,6 @@ def format_lacp(inv, neighbors):
         entry = next((l for l in lacp_entries if l.get("port") == t["port"]), {})
         status = entry.get("status", "?")
 
-        # Get LLDP partner info
         partner = "unknown"
         partner_port = "unknown"
 
@@ -110,7 +94,7 @@ def format_lacp(inv, neighbors):
                 sysname = n.get("system_name", "?")
                 chassis = n.get("chassis_id", "?")
                 partner = f"{sysname} ({chassis})"
-                partner_port = n.get("port_descr") or "unknown"
+                partner_port = n.get("port_descr") or n.get("port_id") or "unknown"
                 break
 
         lacp_struct[grp].append({
@@ -131,23 +115,14 @@ def main():
     parser.add_argument("--password", required=True)
     args = parser.parse_args()
 
-    # Collect data
     results = collect_lldp(args.switch, args.username, args.password)
     inv = results["inventory"]
 
-    # Pretty Inventory
     format_inventory(inv)
-
-    # Pretty LACP
     format_lacp(inv, results["neighbors"])
-
-    # Pretty VLAN Summary
     format_vlan_summary(inv)
-
-    # Pretty Port → VLAN Table
     format_port_vlan_table(inv)
 
-    # Pretty LLDP Neighbor Table
     lldp_table({n["local_port"]: n for n in results["neighbors"]})
 
 
