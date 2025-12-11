@@ -1,107 +1,127 @@
 import argparse
 from src.lldp_collector import collect_lldp
-from src.utils import print_table
+from src.utils import (
+    console,
+    section,
+    kv_table,
+    vlan_block,
+    port_vlan_table,
+    lacp_table,
+    lldp_table,
+)
 
 
-def print_lacp_detail(inv, neighbors):
-    lacp = inv.get("lacp", [])
-    trunks = inv.get("trunks", [])
+def format_inventory(inv):
+    """
+    Pretty-print inventory sections using Rich tables.
+    """
 
-    trunk_members = {}
-    for t in trunks:
-        grp = t.get("group")
-        if grp:
-            trunk_members.setdefault(grp, []).append(t["port"])
+    section("INVENTORY")
 
-    neigh_by_port = {}
-    for n in neighbors:
-        p = n.get("local_port")
-        neigh_by_port.setdefault(p, []).append(n)
+    # ---------------- SYSTEM -----------------
+    system_fields = {
+        "Serial": inv.get("serial"),
+        "Base MAC": inv.get("base_mac"),
+        "Software": inv.get("software"),
+        "Boot ROM": inv.get("bootrom"),
+        "Uptime": inv.get("uptime"),
+        "CPU Load": inv.get("cpu"),
+    }
+    kv_table("System", system_fields)
 
-    print("\n--- LACP ---\n")
+    # ---------------- MEMORY -----------------
+    memory_fields = {
+        "Total": inv.get("memory_total_hr"),
+        "Free": inv.get("memory_free_hr"),
+    }
+    kv_table("Memory", memory_fields)
 
-    for grp, ports in trunk_members.items():
-        print(f"  {grp}:")
+    # ---------------- HARDWARE -----------------
+    hardware_fields = {
+        "Model": inv.get("model"),
+        "SKU": inv.get("sku"),
+    }
+    kv_table("Hardware", hardware_fields)
 
-        chk_status = set()
-        chk_partner = set()
-        lldp_missing_on_up = False
-
-        for p in ports:
-            entry = next((l for l in lacp if l.get("port") == p), {})
-            status = entry.get("status","?")
-            chk_status.add(status)
-
-            partner = "unknown"
-            partner_port = "unknown"
-
-            if p in neigh_by_port:
-                n = neigh_by_port[p][0]
-                sysname = n.get("system_name","?")
-                chassis = n.get("chassis_id","?")
-                partner = f"{sysname} ({chassis})"
-                partner_port = n.get("port_descr") or "?"
-            else:
-                if status.lower() == "up":
-                    lldp_missing_on_up = True
-
-            chk_partner.add(partner)
-            print(f"    Port {p:<3} status:{status:<4} partner:{partner}   port:{partner_port}")
-
-        if ("Down" in chk_status) or len(chk_partner) > 1:
-            print("      ⚠ WARNING: LACP link mismatch detected")
-
-        if lldp_missing_on_up:
-            print("      ⚠ WARNING: LLDP missing on active LACP member (best practice to enable)")
-
-        print()
+    # ---------------- POWER -----------------
+    power_fields = {
+        "PoE Total": inv.get("poe_total"),
+        "Used": inv.get("poe_used"),
+        "Remaining": inv.get("poe_remaining"),
+    }
+    kv_table("Power", power_fields)
 
 
-def print_vlan_summary(inv):
+def format_vlan_summary(inv):
+    """
+    Pretty VLAN summary using utils.vlan_block()
+    """
     if "vlans_detail" not in inv:
         return
 
-    print("\n========================")
-    print("       VLAN SUMMARY     ")
-    print("========================")
+    section("VLAN SUMMARY")
 
-    for vlan_id, vlan in sorted(inv["vlans_detail"].items(), key=lambda x:int(x[0])):
-        name = vlan.get("name") or ""
-        ip   = vlan.get("ip") or "—"
-        role = "L3" if vlan.get("l3") else "L2 only"
-
-        print(f"\nVLAN {vlan_id:<4} {name}")
-        print(f"   IP/Subnet : {ip}")
-        print(f"   Role      : {role}")
-
-        untagged = vlan.get("untagged", [])
-        tagged   = vlan.get("tagged", [])
-
-        print("   Untagged  :", ", ".join(sorted(untagged)) if untagged else "—")
-        print("   Tagged    :", ", ".join(sorted(tagged))   if tagged   else "—")
+    for vlan_id, vlan in sorted(inv["vlans_detail"].items(), key=lambda x: int(x[0])):
+        vlan_format = {
+            "id": vlan_id,
+            "name": vlan.get("name") or "",
+            "ip": vlan.get("ip") or "—",
+            "role": "L3" if vlan.get("l3") else "L2 only",
+            "untagged": ", ".join(vlan.get("untagged", [])) or "—",
+            "tagged": ", ".join(vlan.get("tagged", [])) or "—",
+        }
+        vlan_block(vlan_format)
 
 
-def print_port_vlan_table(inv):
+def format_port_vlan_table(inv):
     if "port_vlans" not in inv:
         return
 
-    print("\n========================")
-    print("     PORT VLAN TABLE    ")
-    print("========================\n")
+    section("PORT VLAN MAP")
+    port_vlan_table(inv["port_vlans"])
 
-    def sort_key(p):
-        prefix = p[0]
-        num = p[1:]
-        try:
-            return (prefix, int(num))
-        except:
-            return (prefix, 999)
 
-    for port in sorted(inv["port_vlans"].keys(), key=sort_key):
-        cfg = inv["port_vlans"][port]
-        untag = cfg.get("untagged") or "—"
-        tagged = ", ".join(sorted(cfg.get("tagged", []))) or "—"
-        print(f"{port:<8}  untagged:{untag:<6}   tagged:{tagged}")
+def format_lacp(inv, neighbors):
+    """
+    Convert your existing LACP logic into structured data for pretty-printing.
+    """
+    lacp_entries = inv.get("lacp", [])
+    trunks = inv.get("trunks", [])
+
+    # Build trunk group → members list
+    lacp_struct = {}
+
+    for t in trunks:
+        grp = t.get("group")
+        if not grp:
+            continue
+
+        lacp_struct.setdefault(grp, [])
+
+        entry = next((l for l in lacp_entries if l.get("port") == t["port"]), {})
+        status = entry.get("status", "?")
+
+        # Get LLDP partner info
+        partner = "unknown"
+        partner_port = "unknown"
+
+        for n in neighbors:
+            if n.get("local_port") == t["port"]:
+                sysname = n.get("system_name", "?")
+                chassis = n.get("chassis_id", "?")
+                partner = f"{sysname} ({chassis})"
+                partner_port = n.get("port_descr") or "unknown"
+                break
+
+        lacp_struct[grp].append({
+            "port_num": t["port"],
+            "status": status,
+            "partner": partner,
+            "port": partner_port,
+        })
+
+    section("LACP STATUS")
+    lacp_table(lacp_struct)
 
 
 def main():
@@ -111,43 +131,25 @@ def main():
     parser.add_argument("--password", required=True)
     args = parser.parse_args()
 
+    # Collect data
     results = collect_lldp(args.switch, args.username, args.password)
     inv = results["inventory"]
 
-    print("\n========================")
-    print("       INVENTORY        ")
-    print("========================")
+    # Pretty Inventory
+    format_inventory(inv)
 
-    print("\n--- SYSTEM ---")
-    for key in ["serial", "base_mac", "software", "bootrom", "uptime", "cpu"]:
-        if key in inv:
-            print(f"{key:15}: {inv[key]}")
+    # Pretty LACP
+    format_lacp(inv, results["neighbors"])
 
-    print("\n--- MEMORY ---")
-    if "memory_total_hr" in inv:
-        print(f"{'total':15}: {inv['memory_total_hr']}")
-    if "memory_free_hr" in inv:
-        print(f"{'free':15}: {inv['memory_free_hr']}")
+    # Pretty VLAN Summary
+    format_vlan_summary(inv)
 
-    print("\n--- HARDWARE ---")
-    for key in ["model", "sku"]:
-        if key in inv:
-            print(f"{key:15}: {inv[key]}")
+    # Pretty Port → VLAN Table
+    format_port_vlan_table(inv)
 
-    print("\n--- POWER ---")
-    for key in ["poe_total", "poe_used", "poe_remaining"]:
-        if key in inv:
-            print(f"{key:15}: {inv[key]}")
-
-    print_lacp_detail(inv, results["neighbors"])
-
-    print_vlan_summary(inv)
-
-    print_port_vlan_table(inv)
-
-    print_table(results["neighbors"])
+    # Pretty LLDP Neighbor Table
+    lldp_table({n["local_port"]: n for n in results["neighbors"]})
 
 
 if __name__ == "__main__":
     main()
-

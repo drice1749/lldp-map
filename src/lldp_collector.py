@@ -1,6 +1,7 @@
 import re
 import ipaddress
 from netmiko import ConnectHandler
+from src.utils import console  # NEW: rich console for vendor detection output
 
 # map vendor strings to netmiko device types
 VENDOR_MAP = {
@@ -17,7 +18,7 @@ def human_bytes(v):
         if n > 1_000_000_000:
             return f"{n/1_000_000_000:.2f} GB"
         elif n > 1_000_000:
-            return f"{n/1000000:.1f} MB"
+            return f"{n/1_000_000:.1f} MB"
         return v
     except:
         return v
@@ -86,12 +87,10 @@ def collect_inventory(conn, vendor_key):
         if m: inv["cpu"] = m.group(1) + "%"
 
         m = re.search(r"Memory\s*-\s*Total\s*:\s*([\d,]+)", sys_out)
-        if m:
-            inv["memory_total_hr"] = human_bytes(m.group(1))
+        if m: inv["memory_total_hr"] = human_bytes(m.group(1))
 
         m = re.search(r"Free\s*:\s*([\d,]+)", sys_out)
-        if m:
-            inv["memory_free_hr"] = human_bytes(m.group(1))
+        if m: inv["memory_free_hr"] = human_bytes(m.group(1))
 
     except Exception as e:
         inv["system_error"] = str(e)
@@ -241,7 +240,7 @@ def collect_inventory(conn, vendor_key):
                 ports = expand_ports(m.group(1))
                 for p in ports:
                     inv["vlans_detail"][current_vlan]["untagged"].append(p)
-                    inv["port_vlans"].setdefault(p, {"tagged":[], "untagged":None})
+                    inv["port_vlans"].setdefault(p, {"tagged": [], "untagged": None})
                     inv["port_vlans"][p]["untagged"] = current_vlan
 
             # tagged
@@ -250,7 +249,7 @@ def collect_inventory(conn, vendor_key):
                 ports = expand_ports(m.group(1))
                 for p in ports:
                     inv["vlans_detail"][current_vlan]["tagged"].append(p)
-                    inv["port_vlans"].setdefault(p, {"tagged":[], "untagged":None})
+                    inv["port_vlans"].setdefault(p, {"tagged": [], "untagged": None})
                     inv["port_vlans"][p]["tagged"].append(current_vlan)
 
     except Exception as e:
@@ -260,7 +259,7 @@ def collect_inventory(conn, vendor_key):
 
 
 def collect_lldp(host, username, password):
-    # vendor detect
+    # vendor detect (first lightweight connection)
     base = {
         "device_type": "terminal_server",
         "host": host,
@@ -278,9 +277,10 @@ def collect_lldp(host, username, password):
     vendor_key = detect_vendor(banner)
     device_type = VENDOR_MAP.get(vendor_key, "hp_procurve")
 
-    print(f"[{host}] Vendor detected: {vendor_key} → {device_type}")
+    # PRETTY VENDOR DETECTION
+    console.print(f"[bold cyan][{host}][/bold cyan] Vendor detected: [yellow]{vendor_key}[/yellow] → [green]{device_type}[/green]")
 
-    # proper connection
+    # Connect for real work
     device = {
         "device_type": device_type,
         "host": host,
@@ -289,9 +289,12 @@ def collect_lldp(host, username, password):
     }
     conn = ConnectHandler(**device)
 
+    # disable paging
     for cmd in ["no page", "terminal length 0"]:
-        try: conn.send_command(cmd)
-        except: pass
+        try:
+            conn.send_command(cmd)
+        except:
+            pass
 
     inventory = collect_inventory(conn, vendor_key)
 
@@ -310,17 +313,22 @@ def collect_lldp(host, username, password):
             current = {}
 
         m = re.search(r"Local Port\s*:\s*(\S+)", line)
-        if m: current["local_port"] = m.group(1)
+        if m:
+            current["local_port"] = m.group(1)
 
         m = re.search(r"ChassisId\s*:\s*(\S+)", line)
-        if m: current["chassis_id"] = m.group(1)
+        if m:
+            current["chassis_id"] = m.group(1)
 
         m = re.search(r"SysName\s*:\s*(.+)$", line)
-        if m: current["system_name"] = m.group(1).strip()
+        if m:
+            current["system_name"] = m.group(1).strip()
 
         m = re.search(r"PortDescr\s*:\s*(.+)$", line)
-        if m: current["port_descr"] = m.group(1).strip()
+        if m:
+            current["port_descr"] = m.group(1).strip()
 
+        # LLDP mgmt IP handling
         if line.startswith("Type") and "ipv4" in line.lower():
             current["_next_addr_is_ipv4"] = True
             continue
@@ -335,4 +343,3 @@ def collect_lldp(host, username, password):
         neighbors.append(current)
 
     return {"inventory": inventory, "neighbors": neighbors}
-
