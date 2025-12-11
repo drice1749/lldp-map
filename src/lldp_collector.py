@@ -1,9 +1,61 @@
 import re
 import ipaddress
 from netmiko import ConnectHandler
-from src.utils import console  # NEW: rich console for vendor detection output
+from src.utils import console
 
-# map vendor strings to netmiko device types
+
+# ------------------------------------------------------------
+# PORT SORTING HELPERS
+# ------------------------------------------------------------
+
+def sort_key_port(port):
+    """
+    Universal port sort key supporting:
+    - Numeric ports (1,2,3…)
+    - Lettered ports (A1, B24…)
+    - CX ports (1/1/1)
+    - Cisco ports (Gi1/0/1, Fa0/24)
+    - Everything else (eth0, LAN…)
+    """
+
+    if port is None:
+        return (5, 9999, 9999, 9999)
+
+    p = str(port).strip()
+
+    # 1) Numeric ports: "1", "2", "48"
+    if p.isdigit():
+        return (1, int(p), 0, 0)
+
+    # 2) Lettered ports: "A1", "B24"
+    m = re.match(r"^([A-Za-z])(\d+)$", p)
+    if m:
+        letter = m.group(1).upper()
+        number = int(m.group(2))
+        return (2, ord(letter), number, 0)
+
+    # 3) Aruba CX ports: "1/1/1"
+    if "/" in p:
+        parts = p.split("/")
+        if all(x.isdigit() for x in parts):
+            return (3, int(parts[0]), int(parts[1]), int(parts[2]))
+
+    # 4) Cisco-style: Gi1/0/1, Fa0/24, Te1/0/1
+    m = re.match(r"^(Gi|Fa|Te|Fo)(\d+)/(\d+)/(\d+)$", p, re.IGNORECASE)
+    if m:
+        prefix = m.group(1).lower()
+        p1, p2, p3 = int(m.group(2)), int(m.group(3)), int(m.group(4))
+        pref_order = {"fa": 1, "gi": 2, "te": 3, "fo": 4}.get(prefix, 9)
+        return (4, pref_order, p1, p2 * 100 + p3)
+
+    # 5) Everything else
+    return (5, str(p), 0, 0)
+
+
+# ------------------------------------------------------------
+# VENDOR MAP
+# ------------------------------------------------------------
+
 VENDOR_MAP = {
     "arubaos-switch": "hp_procurve",
     "arubaos_cx":     "aruba_aoscx",
@@ -11,6 +63,10 @@ VENDOR_MAP = {
     "fortinet":       "fortinet",
 }
 
+
+# ------------------------------------------------------------
+# HELPERS
+# ------------------------------------------------------------
 
 def human_bytes(v):
     try:
@@ -32,6 +88,9 @@ def mask_to_cidr(mask):
 
 
 def expand_ports(text):
+    """
+    Expands ranges like A1-A4 or 1-4.
+    """
     result = []
     parts = text.split(",")
     for part in parts:
@@ -42,7 +101,7 @@ def expand_ports(text):
             try:
                 s = int(start[1:])
                 e = int(end[1:])
-                for x in range(s, e+1):
+                for x in range(s, e + 1):
                     result.append(f"{prefix}{x}")
             except:
                 continue
@@ -61,13 +120,17 @@ def detect_vendor(output):
         return "cisco_ios"
     if "fortigate" in text or "fortinet" in text:
         return "fortinet"
-    return "arubaos-switch"   # fallback
+    return "arubaos-switch"
 
+
+# ------------------------------------------------------------
+# INVENTORY COLLECTION
+# ------------------------------------------------------------
 
 def collect_inventory(conn, vendor_key):
     inv = {}
 
-    # ---- SYSTEM ----
+    # SYSTEM
     try:
         sys_out = conn.send_command("show system")
 
@@ -95,20 +158,22 @@ def collect_inventory(conn, vendor_key):
     except Exception as e:
         inv["system_error"] = str(e)
 
-    # ---- VERSION ----
+    # VERSION
     try:
         ver_out = conn.send_command("show version")
 
         wc = re.search(r"WC\.\d+\.\d+\.\d+", ver_out)
-        if wc: inv["software"] = wc.group(0)
+        if wc:
+            inv["software"] = wc.group(0)
 
         boot = re.search(r"Boot ROM Version:\s*(\S+)", ver_out)
-        if boot: inv["bootrom"] = boot.group(1)
+        if boot:
+            inv["bootrom"] = boot.group(1)
 
-    except Exception as e:
-        inv["version_error"] = str(e)
+    except Exception:
+        pass
 
-    # ---- MODULES ----
+    # MODULES
     try:
         mod_out = conn.send_command("show modules")
         m = re.search(r"Chassis:\s*([A-Za-z0-9\-+]+)\s+(\S+)", mod_out)
@@ -118,7 +183,7 @@ def collect_inventory(conn, vendor_key):
     except:
         pass
 
-    # ---- POWER ----
+    # POWER
     try:
         pwr_out = conn.send_command("show power")
 
@@ -130,16 +195,17 @@ def collect_inventory(conn, vendor_key):
 
         m = re.search(r"Total Remaining Power\s*:\s*([\d\.]+)\s*W", pwr_out)
         if m: inv["poe_remaining"] = m.group(1) + " W"
+
     except:
         pass
 
-    # ---- TRUNKS ----
+    # TRUNKS
     try:
         t_out = conn.send_command("show trunks")
         trunks = []
         for line in t_out.splitlines():
             line = line.strip()
-            if not line: 
+            if not line:
                 continue
 
             parts = line.split()
@@ -148,16 +214,16 @@ def collect_inventory(conn, vendor_key):
 
             port = parts[0]
             m_grp = re.search(r"\bTrk\d+\b", line)
-            if not m_grp:
-                continue
+            if m_grp:
+                trunks.append({"port": port, "group": m_grp.group(0)})
 
-            trunks.append({"port": port, "group": m_grp.group(0)})
         if trunks:
             inv["trunks"] = trunks
+
     except:
         pass
 
-    # ---- LACP ----
+    # LACP
     try:
         lacp_out = conn.send_command("show lacp")
         lacp = []
@@ -190,10 +256,11 @@ def collect_inventory(conn, vendor_key):
                 })
         if lacp:
             inv["lacp"] = lacp
+
     except Exception as e:
         inv["lacp_error"] = str(e)
 
-    # ---- VLAN + PORT VLAN PARSING ----
+    # VLAN + PORT VLAN MAP
     try:
         rc = conn.send_command("show running-config")
         inv["vlans_detail"] = {}
@@ -258,8 +325,12 @@ def collect_inventory(conn, vendor_key):
     return inv
 
 
+# ------------------------------------------------------------
+# LLDP COLLECTION
+# ------------------------------------------------------------
+
 def collect_lldp(host, username, password):
-    # vendor detect (first lightweight connection)
+    # Vendor detect pass
     base = {
         "device_type": "terminal_server",
         "host": host,
@@ -277,13 +348,12 @@ def collect_lldp(host, username, password):
     vendor_key = detect_vendor(banner)
     device_type = VENDOR_MAP.get(vendor_key, "hp_procurve")
 
-    # PRETTY VENDOR DETECTION
     console.print(
         f"[bold cyan][{host}][/bold cyan] Vendor detected: "
         f"[yellow]{vendor_key}[/yellow] → [green]{device_type}[/green]"
     )
 
-    # Connect for real work
+    # Real connection
     device = {
         "device_type": device_type,
         "host": host,
@@ -299,8 +369,10 @@ def collect_lldp(host, username, password):
         except:
             pass
 
+    # Collect inventory
     inventory = collect_inventory(conn, vendor_key)
 
+    # LLDP detail
     raw = conn.send_command("show lldp info remote-device detail")
     conn.disconnect()
 
@@ -315,44 +387,44 @@ def collect_lldp(host, username, password):
                 neighbors.append(current)
             current = {}
 
+        # Local port
         m = re.search(r"Local Port\s*:\s*(\S+)", line)
         if m:
             current["local_port"] = m.group(1)
 
+        # MAC
         m = re.search(r"ChassisId\s*:\s*(\S+)", line)
         if m:
-            current["mac"] = m.group(1)
             current["chassis_id"] = m.group(1)
 
+        # Remote System Name
         m = re.search(r"SysName\s*:\s*(.+)$", line)
         if m:
             current["system_name"] = m.group(1).strip()
 
-        m = re.search(r"PortDescr\s*:\s*(.*)$", line)
+        # Remote Port Description
+        m = re.search(r"PortDescr\s*:\s*(.+)$", line)
         if m:
-            desc = m.group(1).strip()
-            if desc:
-                current["remote_port"] = desc
+            pd = m.group(1).strip()
+            if pd == "":
+                pd = "—"
+            current["port_descr"] = pd
 
-        m = re.search(r"PortId\s*:\s*(.*)$", line)
-        if m:
-            pid = m.group(1).strip()
-            if pid:
-                current.setdefault("remote_port", pid)
-
+        # Management IP (LLDP)
         if line.startswith("Type") and "ipv4" in line.lower():
-            current["_next_addr_is_ipv4"] = True
+            current["_next_ipv4"] = True
             continue
 
-        if current.get("_next_addr_is_ipv4") and line.startswith("Address"):
-            parts = line.split(":")
-            if len(parts) > 1:
-                current["mgmt_ip"] = parts[1].strip()
-            current.pop("_next_addr_is_ipv4", None)
+        if line.startswith("Address") and current.get("_next_ipv4"):
+            ip = line.split(":")[-1].strip()
+            current["mgmt_ip"] = ip
+            del current["_next_ipv4"]
 
+    # Add final entry
     if current:
         neighbors.append(current)
 
-    neighbors.sort(key=lambda x: int(x.get("local_port", "9999")))
+    # SORT NEIGHBORS
+    neighbors.sort(key=lambda x: sort_key_port(x.get("local_port")))
 
     return {"inventory": inventory, "neighbors": neighbors}
