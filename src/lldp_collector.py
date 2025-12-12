@@ -153,7 +153,7 @@ def collect_inventory(conn, vendor_key):
         if boot:
             inv["bootrom"] = boot.group(1)
 
-    except Exception:
+    except:
         pass
 
     # MODULES
@@ -187,10 +187,6 @@ def collect_inventory(conn, vendor_key):
         t_out = conn.send_command("show trunks")
         trunks = []
         for line in t_out.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-
             parts = line.split()
             if len(parts) < 2:
                 continue
@@ -207,22 +203,34 @@ def collect_inventory(conn, vendor_key):
         pass
 
     # ------------------------------------------------------------
-    # NEW FEATURE: INTERFACE STATUS / SPEED / DESCRIPTION
-    # ONLY for ArubaOS-Switch
+    # INTERFACE STATUS / SPEED / DESCRIPTION (FINAL FIXED VERSION)
     # ------------------------------------------------------------
     if vendor_key == "arubaos-switch":
         try:
             iface_out = conn.send_command("show interfaces brief")
             inv["interfaces"] = {}
 
-            for line in iface_out.splitlines():
+            for raw_line in iface_out.splitlines():
+                line = raw_line.strip()
+                if not line or not line[0].isdigit():
+                    continue
+
                 parts = line.split()
-                if len(parts) < 5:
+                # Expected structure after splitting:
+                # 0: port
+                # 1: type
+                # 2: |
+                # 3: intrusion alert (No)
+                # 4: enabled (Yes)
+                # 5: status (Up/Down)
+                # 6: mode/speed (1000FDx)
+
+                if len(parts) < 7:
                     continue
 
                 port = parts[0]
-                status = parts[3]
-                speed = parts[4]
+                status = parts[5]
+                speed = parts[6]
 
                 inv["interfaces"][port] = {
                     "status": status,
@@ -230,7 +238,7 @@ def collect_inventory(conn, vendor_key):
                     "description": ""
                 }
 
-            # Pull descriptions
+            # Pull descriptions individually
             for port in inv["interfaces"]:
                 desc_out = conn.send_command(f"show interfaces {port}")
                 m = re.search(r"Name\s*:\s*(.+)", desc_out)
@@ -240,8 +248,9 @@ def collect_inventory(conn, vendor_key):
         except Exception as e:
             inv["interface_error"] = str(e)
 
+
     # ------------------------------------------------------------
-    # VLAN + PORT VLAN MAP
+    # VLAN / PORT MEMBERSHIP
     # ------------------------------------------------------------
     try:
         rc = conn.send_command("show running-config")
@@ -303,25 +312,29 @@ def collect_inventory(conn, vendor_key):
     return inv
 
 
-
 # ------------------------------------------------------------
 # LLDP COLLECTION
 # ------------------------------------------------------------
 
 def collect_lldp(host, username, password):
-    # Vendor detect pass
+    """Two-stage SSH — detect vendor, then collect LLDP + inventory."""
+
+    # PASS 1 — detect vendor
     base = {
         "device_type": "terminal_server",
         "host": host,
         "username": username,
         "password": password,
     }
+
     conn = ConnectHandler(**base)
     banner = conn.find_prompt()
+
     try:
         banner += conn.send_command("show version")
     except:
         pass
+
     conn.disconnect()
 
     vendor_key = detect_vendor(banner)
@@ -332,17 +345,18 @@ def collect_lldp(host, username, password):
         f"[yellow]{vendor_key}[/yellow] → [green]{device_type}[/green]"
     )
 
-    # Real connection
+    # PASS 2 — real driver
     device = {
         "device_type": device_type,
         "host": host,
         "username": username,
         "password": password,
     }
+
     conn = ConnectHandler(**device)
 
-    # disable paging
-    for cmd in ["no page", "terminal length 0"]:
+    # Disable paging
+    for cmd in ("no page", "terminal length 0"):
         try:
             conn.send_command(cmd)
         except:
@@ -351,7 +365,7 @@ def collect_lldp(host, username, password):
     # Collect inventory
     inventory = collect_inventory(conn, vendor_key)
 
-    # LLDP detail
+    # Collect LLDP detail
     raw = conn.send_command("show lldp info remote-device detail")
     conn.disconnect()
 
@@ -383,18 +397,22 @@ def collect_lldp(host, username, password):
             pd = m.group(1).strip()
             current["port_descr"] = pd if pd else "—"
 
-        if line.startswith("Type") and "ipv4" in line.lower():
-            current["_next_ipv4"] = True
+        # Handling IPv4 mgmt IP format
+        if line.lower().startswith("type") and "ipv4" in line.lower():
+            current["_expect_ipv4"] = True
             continue
 
-        if line.startswith("Address") and current.get("_next_ipv4"):
+        if current.get("_expect_ipv4") and line.lower().startswith("address"):
             ip = line.split(":")[-1].strip()
             current["mgmt_ip"] = ip
-            del current["_next_ipv4"]
+            del current["_expect_ipv4"]
 
     if current:
         neighbors.append(current)
 
     neighbors.sort(key=lambda x: sort_key_port(x.get("local_port")))
 
-    return {"inventory": inventory, "neighbors": neighbors}
+    return {
+        "inventory": inventory,
+        "neighbors": neighbors,
+    }

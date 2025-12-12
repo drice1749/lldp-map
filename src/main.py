@@ -14,34 +14,30 @@ from src.utils import (
 def format_inventory(inv):
     section("INVENTORY")
 
-    system_fields = {
+    kv_table("System", {
         "Serial": inv.get("serial"),
         "Base MAC": inv.get("base_mac"),
         "Software": inv.get("software"),
         "Boot ROM": inv.get("bootrom"),
         "Uptime": inv.get("uptime"),
         "CPU Load": inv.get("cpu"),
-    }
-    kv_table("System", system_fields)
+    })
 
-    memory_fields = {
+    kv_table("Memory", {
         "Total": inv.get("memory_total_hr"),
         "Free": inv.get("memory_free_hr"),
-    }
-    kv_table("Memory", memory_fields)
+    })
 
-    hardware_fields = {
+    kv_table("Hardware", {
         "Model": inv.get("model"),
         "SKU": inv.get("sku"),
-    }
-    kv_table("Hardware", hardware_fields)
+    })
 
-    power_fields = {
+    kv_table("Power", {
         "PoE Total": inv.get("poe_total"),
         "Used": inv.get("poe_used"),
         "Remaining": inv.get("poe_remaining"),
-    }
-    kv_table("Power", power_fields)
+    })
 
 
 def format_vlan_summary(inv):
@@ -51,15 +47,14 @@ def format_vlan_summary(inv):
     section("VLAN SUMMARY")
 
     for vlan_id, vlan in sorted(inv["vlans_detail"].items(), key=lambda x: int(x[0])):
-        vlan_format = {
+        vlan_block({
             "id": vlan_id,
-            "name": vlan.get("name") or "",
+            "name": vlan.get("name"),
             "ip": vlan.get("ip") or "—",
             "role": "L3" if vlan.get("l3") else "L2 only",
             "untagged": ", ".join(vlan.get("untagged", [])) or "—",
             "tagged": ", ".join(vlan.get("tagged", [])) or "—",
-        }
-        vlan_block(vlan_format)
+        })
 
 
 def format_port_vlan_table(inv):
@@ -71,9 +66,7 @@ def format_port_vlan_table(inv):
 
 
 def format_lacp(inv, neighbors):
-    lacp_entries = inv.get("lacp", [])
     trunks = inv.get("trunks", [])
-
     lacp_struct = {}
 
     for t in trunks:
@@ -83,23 +76,18 @@ def format_lacp(inv, neighbors):
 
         lacp_struct.setdefault(grp, [])
 
-        entry = next((l for l in lacp_entries if l.get("port") == t["port"]), {})
-        status = entry.get("status", "?")
-
         partner = "unknown"
         partner_port = "unknown"
 
         for n in neighbors:
             if n.get("local_port") == t["port"]:
-                sysname = n.get("system_name", "?")
-                chassis = n.get("chassis_id", "?")
-                partner = f"{sysname} ({chassis})"
-                partner_port = n.get("port_descr") or n.get("port_id") or "unknown"
+                partner = f"{n.get('system_name', '?')} ({n.get('chassis_id', '?')})"
+                partner_port = n.get("port_descr") or "unknown"
                 break
 
         lacp_struct[grp].append({
             "port_num": t["port"],
-            "status": status,
+            "status": "?",
             "partner": partner,
             "port": partner_port,
         })
