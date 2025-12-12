@@ -1,4 +1,3 @@
-# utils.py
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -8,45 +7,18 @@ console = Console()
 
 
 # ============================================================
-#  LEGACY FUNCTION (kept for compatibility)
-# ============================================================
-
-def print_table(results):
-    """
-    Old LLDP table printing. Still works for backward compatibility.
-    """
-    console.print("\n[bold cyan]=== LLDP Neighbors ===[/bold cyan]")
-    for r in results:
-        local = r.get("local_port", "?")
-        sysname = r.get("system_name", "?")
-        chassis = r.get("chassis_id", "?")
-        mgmt = r.get("mgmt_ip", "")
-
-        if mgmt:
-            console.print(f"[cyan]{local}[/cyan] → {sysname} ({chassis})  [green]mgmt:{mgmt}[/green]")
-        else:
-            console.print(f"[cyan]{local}[/cyan] → {sysname} ({chassis})")
-
-
-# ============================================================
-#  SECTION HEADERS
+# SECTION HEADERS
 # ============================================================
 
 def section(title: str):
-    """
-    Styled section header.
-    """
     console.print(Panel(f"[bold white]{title}[/bold white]", style="cyan", padding=(0, 2)))
 
 
 # ============================================================
-#  GENERIC KEY/VALUE TABLE
+# GENERIC KEY/VALUE TABLE
 # ============================================================
 
 def kv_table(title: str, data: dict):
-    """
-    Pretty two-column key/value table.
-    """
     table = Table(
         title=f"[bold]{title}[/bold]",
         title_style="bold magenta",
@@ -64,13 +36,10 @@ def kv_table(title: str, data: dict):
 
 
 # ============================================================
-#  VLAN BLOCK OUTPUT
+# VLAN BLOCK OUTPUT
 # ============================================================
 
 def vlan_block(vlan: dict):
-    """
-    Pretty output of a single VLAN block.
-    """
     vid = vlan.get("id")
     name = vlan.get("name", "")
     ip = vlan.get("ip", "—")
@@ -87,41 +56,51 @@ def vlan_block(vlan: dict):
 
 
 # ============================================================
-#  PORT → VLAN TABLE
+# PORT → VLAN + INTERFACE TABLE
 # ============================================================
 
-def port_vlan_table(portmap: dict):
-    """
-    Pretty port-to-VLAN mapping table.
-    """
+def port_vlan_table(portmap: dict, interfaces: dict):
     table = Table(
         show_header=True,
         header_style="bold white",
-        box=box.MINIMAL_DOUBLE_HEAD
+        box=box.MINIMAL_DOUBLE_HEAD,
+        expand=True
     )
-    table.add_column("Port", style="cyan", justify="center")
-    table.add_column("Untagged VLAN", style="green", justify="center")
-    table.add_column("Tagged VLANs", style="bright_blue", justify="left")
 
-    # Keep numeric/letter/CX sorting responsibility in caller.
+    table.add_column("Port", style="cyan", no_wrap=True)
+    table.add_column("Status", style="green", no_wrap=True)
+    table.add_column("Speed", style="yellow", no_wrap=True)
+    table.add_column("Description", style="magenta")
+    table.add_column("Untagged VLAN", style="white", no_wrap=True)
+    table.add_column("Tagged VLANs", style="bright_blue")
+
     for port, pdata in portmap.items():
-        untag = pdata.get("untagged", "—") or "—"
-        tagged_list = pdata.get("tagged", [])
-        tagged = ", ".join(map(str, tagged_list)) if tagged_list else "—"
+        iface = interfaces.get(port, {})
+        status = iface.get("status", "—")
+        speed = iface.get("speed", "—")
+        desc = iface.get("description", "—")
 
-        table.add_row(str(port), str(untag), tagged)
+        untag = pdata.get("untagged", "—")
+        tagged_list = pdata.get("tagged", [])
+        tagged = ", ".join(tagged_list) if tagged_list else "—"
+
+        table.add_row(
+            str(port),
+            status,
+            speed,
+            desc,
+            str(untag),
+            tagged
+        )
 
     console.print(table)
 
 
 # ============================================================
-#  LACP TABLE
+# LACP TABLE
 # ============================================================
 
 def lacp_table(lacp: dict):
-    """
-    Pretty LACP output.
-    """
     for trk, members in lacp.items():
         console.print(f"\n[bold yellow]{trk}[/bold yellow]")
 
@@ -138,25 +117,12 @@ def lacp_table(lacp: dict):
                 f"→ partner: {partner}   peer-port: {peer_port}"
             )
 
-        # LLDP missing hint
-        if all(m.get("partner") in (None, "unknown") for m in members):
-            console.print("    [bold red]⚠ LLDP missing on active LACP member — recommended to enable LLDP[/bold red]")
-
 
 # ============================================================
-#  LLDP TABLE — 5 COLUMNS (LOCAL / REMOTE / MAC / REMOTE PORT / MGMT IP)
+# LLDP TABLE
 # ============================================================
 
 def lldp_table(neighbors: dict):
-    """
-    Pretty LLDP neighbor output.
-    Columns:
-    - Local Port
-    - Remote Name
-    - MAC
-    - Remote Port
-    - Mgmt IP
-    """
     table = Table(
         title="[bold]LLDP NEIGHBORS[/bold]",
         title_style="bold cyan",
@@ -173,11 +139,12 @@ def lldp_table(neighbors: dict):
     table.add_column("Mgmt IP", style="green", no_wrap=True)
 
     for port, n in neighbors.items():
-        remote_name = n.get("system_name", "—")
-        mac = n.get("chassis_id", "—")
-        rport = n.get("port_descr", "—")
-        mgmt = n.get("mgmt_ip", "—")
-
-        table.add_row(str(port), remote_name, mac, rport, mgmt)
+        table.add_row(
+            str(port),
+            n.get("system_name", "—"),
+            n.get("chassis_id", "—"),
+            n.get("port_descr", "—"),
+            n.get("mgmt_ip", "—"),
+        )
 
     console.print(table)

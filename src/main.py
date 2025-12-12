@@ -67,7 +67,7 @@ def format_port_vlan_table(inv):
         return
 
     section("PORT VLAN MAP")
-    port_vlan_table(inv["port_vlans"])
+    port_vlan_table(inv["port_vlans"], inv.get("interfaces", {}))
 
 
 def format_lacp(inv, neighbors):

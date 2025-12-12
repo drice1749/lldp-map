@@ -9,38 +9,25 @@ from src.utils import console
 # ------------------------------------------------------------
 
 def sort_key_port(port):
-    """
-    Universal port sort key supporting:
-    - Numeric ports (1,2,3…)
-    - Lettered ports (A1, B24…)
-    - CX ports (1/1/1)
-    - Cisco ports (Gi1/0/1, Fa0/24)
-    - Everything else (eth0, LAN…)
-    """
-
     if port is None:
         return (5, 9999, 9999, 9999)
 
     p = str(port).strip()
 
-    # 1) Numeric ports: "1", "2", "48"
     if p.isdigit():
         return (1, int(p), 0, 0)
 
-    # 2) Lettered ports: "A1", "B24"
     m = re.match(r"^([A-Za-z])(\d+)$", p)
     if m:
         letter = m.group(1).upper()
         number = int(m.group(2))
         return (2, ord(letter), number, 0)
 
-    # 3) Aruba CX ports: "1/1/1"
     if "/" in p:
         parts = p.split("/")
         if all(x.isdigit() for x in parts):
             return (3, int(parts[0]), int(parts[1]), int(parts[2]))
 
-    # 4) Cisco-style: Gi1/0/1, Fa0/24, Te1/0/1
     m = re.match(r"^(Gi|Fa|Te|Fo)(\d+)/(\d+)/(\d+)$", p, re.IGNORECASE)
     if m:
         prefix = m.group(1).lower()
@@ -48,7 +35,6 @@ def sort_key_port(port):
         pref_order = {"fa": 1, "gi": 2, "te": 3, "fo": 4}.get(prefix, 9)
         return (4, pref_order, p1, p2 * 100 + p3)
 
-    # 5) Everything else
     return (5, str(p), 0, 0)
 
 
@@ -88,9 +74,6 @@ def mask_to_cidr(mask):
 
 
 def expand_ports(text):
-    """
-    Expands ranges like A1-A4 or 1-4.
-    """
     result = []
     parts = text.split(",")
     for part in parts:
@@ -223,44 +206,43 @@ def collect_inventory(conn, vendor_key):
     except:
         pass
 
-    # LACP
-    try:
-        lacp_out = conn.send_command("show lacp")
-        lacp = []
-        in_table = False
+    # ------------------------------------------------------------
+    # NEW FEATURE: INTERFACE STATUS / SPEED / DESCRIPTION
+    # ONLY for ArubaOS-Switch
+    # ------------------------------------------------------------
+    if vendor_key == "arubaos-switch":
+        try:
+            iface_out = conn.send_command("show interfaces brief")
+            inv["interfaces"] = {}
 
-        for line in lacp_out.splitlines():
-            line = line.strip()
-            if not line:
-                continue
+            for line in iface_out.splitlines():
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
 
-            if re.match(r"^-{3,}", line):
-                in_table = True
-                continue
+                port = parts[0]
+                status = parts[3]
+                speed = parts[4]
 
-            if not in_table:
-                continue
-
-            parts = line.split()
-            if len(parts) >= 8:
-                port, enabled, group, status, partner, partner_status, admin_key, oper_key = parts[:8]
-                lacp.append({
-                    "port": port,
-                    "lacp_enabled": enabled,
-                    "trunk_group": group,
+                inv["interfaces"][port] = {
                     "status": status,
-                    "partner": partner,
-                    "partner_status": partner_status,
-                    "admin_key": admin_key,
-                    "oper_key": oper_key,
-                })
-        if lacp:
-            inv["lacp"] = lacp
+                    "speed": speed,
+                    "description": ""
+                }
 
-    except Exception as e:
-        inv["lacp_error"] = str(e)
+            # Pull descriptions
+            for port in inv["interfaces"]:
+                desc_out = conn.send_command(f"show interfaces {port}")
+                m = re.search(r"Name\s*:\s*(.+)", desc_out)
+                if m:
+                    inv["interfaces"][port]["description"] = m.group(1).strip()
 
+        except Exception as e:
+            inv["interface_error"] = str(e)
+
+    # ------------------------------------------------------------
     # VLAN + PORT VLAN MAP
+    # ------------------------------------------------------------
     try:
         rc = conn.send_command("show running-config")
         inv["vlans_detail"] = {}
@@ -286,12 +268,10 @@ def collect_inventory(conn, vendor_key):
             if not current_vlan:
                 continue
 
-            # name
             m = re.search(r'name\s+"(.+)"', line)
             if m:
                 inv["vlans_detail"][current_vlan]["name"] = m.group(1)
 
-            # ip address
             m = re.search(r'ip address\s+(\S+)\s+(\S+)', line)
             if m:
                 ip = m.group(1)
@@ -301,7 +281,6 @@ def collect_inventory(conn, vendor_key):
                 inv["vlans_detail"][current_vlan]["l3"] = True
                 inv["vlans_detail"][current_vlan]["l2_only"] = False
 
-            # untagged
             m = re.search(r'untagged\s+(.+)$', line)
             if m:
                 ports = expand_ports(m.group(1))
@@ -310,7 +289,6 @@ def collect_inventory(conn, vendor_key):
                     inv["port_vlans"].setdefault(p, {"tagged": [], "untagged": None})
                     inv["port_vlans"][p]["untagged"] = current_vlan
 
-            # tagged
             m = re.search(r'tagged\s+(.+)$', line)
             if m:
                 ports = expand_ports(m.group(1))
@@ -323,6 +301,7 @@ def collect_inventory(conn, vendor_key):
         inv["vlan_error"] = str(e)
 
     return inv
+
 
 
 # ------------------------------------------------------------
@@ -387,30 +366,23 @@ def collect_lldp(host, username, password):
                 neighbors.append(current)
             current = {}
 
-        # Local port
         m = re.search(r"Local Port\s*:\s*(\S+)", line)
         if m:
             current["local_port"] = m.group(1)
 
-        # MAC
         m = re.search(r"ChassisId\s*:\s*(\S+)", line)
         if m:
             current["chassis_id"] = m.group(1)
 
-        # Remote System Name
         m = re.search(r"SysName\s*:\s*(.+)$", line)
         if m:
             current["system_name"] = m.group(1).strip()
 
-        # Remote Port Description
         m = re.search(r"PortDescr\s*:\s*(.+)$", line)
         if m:
             pd = m.group(1).strip()
-            if pd == "":
-                pd = "—"
-            current["port_descr"] = pd
+            current["port_descr"] = pd if pd else "—"
 
-        # Management IP (LLDP)
         if line.startswith("Type") and "ipv4" in line.lower():
             current["_next_ipv4"] = True
             continue
@@ -420,11 +392,9 @@ def collect_lldp(host, username, password):
             current["mgmt_ip"] = ip
             del current["_next_ipv4"]
 
-    # Add final entry
     if current:
         neighbors.append(current)
 
-    # SORT NEIGHBORS
     neighbors.sort(key=lambda x: sort_key_port(x.get("local_port")))
 
     return {"inventory": inventory, "neighbors": neighbors}
