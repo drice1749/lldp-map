@@ -1,3 +1,4 @@
+# === lldp_collector.py ===
 import re
 import ipaddress
 from netmiko import ConnectHandler
@@ -19,21 +20,12 @@ def sort_key_port(port):
 
     m = re.match(r"^([A-Za-z])(\d+)$", p)
     if m:
-        letter = m.group(1).upper()
-        number = int(m.group(2))
-        return (2, ord(letter), number, 0)
+        return (2, ord(m.group(1).upper()), int(m.group(2)), 0)
 
     if "/" in p:
         parts = p.split("/")
         if all(x.isdigit() for x in parts):
             return (3, int(parts[0]), int(parts[1]), int(parts[2]))
-
-    m = re.match(r"^(Gi|Fa|Te|Fo)(\d+)/(\d+)/(\d+)$", p, re.IGNORECASE)
-    if m:
-        prefix = m.group(1).lower()
-        p1, p2, p3 = int(m.group(2)), int(m.group(3)), int(m.group(4))
-        pref_order = {"fa": 1, "gi": 2, "te": 3, "fo": 4}.get(prefix, 9)
-        return (4, pref_order, p1, p2 * 100 + p3)
 
     return (5, str(p), 0, 0)
 
@@ -75,19 +67,16 @@ def mask_to_cidr(mask):
 
 def expand_ports(text):
     result = []
-    parts = text.split(",")
-    for part in parts:
+    for part in text.split(","):
         part = part.strip()
         if "-" in part:
             start, end = part.split("-")
             prefix = start[0]
             try:
-                s = int(start[1:])
-                e = int(end[1:])
-                for x in range(s, e + 1):
-                    result.append(f"{prefix}{x}")
+                for i in range(int(start[1:]), int(end[1:]) + 1):
+                    result.append(f"{prefix}{i}")
             except:
-                continue
+                pass
         else:
             result.append(part)
     return result
@@ -113,38 +102,35 @@ def detect_vendor(output):
 def collect_inventory(conn, vendor_key):
     inv = {}
 
-    # SYSTEM
+    # ---------------- SYSTEM ----------------
     try:
         sys_out = conn.send_command("show system")
 
-        m = re.search(r"Serial Number\s+:\s*(\S+)", sys_out)
-        if m: inv["serial"] = m.group(1)
-
-        m = re.search(r"Base MAC Addr\s+:\s*(\S+)", sys_out)
-        if m: inv["base_mac"] = m.group(1)
-
-        m = re.search(r"Software revision\s+:\s*([\w\.]+)", sys_out)
-        if m: inv["software"] = m.group(1)
-
-        m = re.search(r"Up Time\s*:\s*([0-9]+\s+days?)", sys_out)
-        if m: inv["uptime"] = m.group(1).strip()
-
-        m = re.search(r"CPU Util\s*\(\%\)\s*:\s*(\d+)", sys_out)
-        if m: inv["cpu"] = m.group(1) + "%"
+        for pat, key in [
+            (r"Serial Number\s+:\s*(\S+)", "serial"),
+            (r"Base MAC Addr\s+:\s*(\S+)", "base_mac"),
+            (r"Software revision\s+:\s*([\w\.]+)", "software"),
+            (r"Up Time\s*:\s*([0-9]+\s+days?)", "uptime"),
+            (r"CPU Util\s*\(\%\)\s*:\s*(\d+)", "cpu"),
+        ]:
+            m = re.search(pat, sys_out)
+            if m:
+                inv[key] = m.group(1)
 
         m = re.search(r"Memory\s*-\s*Total\s*:\s*([\d,]+)", sys_out)
-        if m: inv["memory_total_hr"] = human_bytes(m.group(1))
+        if m:
+            inv["memory_total_hr"] = human_bytes(m.group(1))
 
-        m = re.search(r"Free\s*:\s*([\d,]+)", sys_out)
-        if m: inv["memory_free_hr"] = human_bytes(m.group(1))
+        m = re.search(r"Memory\s*-\s*Free\s*:\s*([\d,]+)", sys_out)
+        if m:
+            inv["memory_free_hr"] = human_bytes(m.group(1))
 
     except Exception as e:
         inv["system_error"] = str(e)
 
-    # VERSION
+    # ---------------- VERSION ----------------
     try:
         ver_out = conn.send_command("show version")
-
         wc = re.search(r"WC\.\d+\.\d+\.\d+", ver_out)
         if wc:
             inv["software"] = wc.group(0)
@@ -152,59 +138,46 @@ def collect_inventory(conn, vendor_key):
         boot = re.search(r"Boot ROM Version:\s*(\S+)", ver_out)
         if boot:
             inv["bootrom"] = boot.group(1)
-
     except:
         pass
 
-    # MODULES
+    # ---------------- MODULES ----------------
     try:
         mod_out = conn.send_command("show modules")
         m = re.search(r"Chassis:\s*([A-Za-z0-9\-+]+)\s+(\S+)", mod_out)
         if m:
-            inv["model"] = m.group(1)
-            inv["sku"] = m.group(2)
+            inv["model"], inv["sku"] = m.group(1), m.group(2)
     except:
         pass
 
-    # POWER
+    # ---------------- POWER ----------------
     try:
         pwr_out = conn.send_command("show power")
-
-        m = re.search(r"Total Available Power\s*:\s*([\d\.]+)\s*W", pwr_out)
-        if m: inv["poe_total"] = m.group(1) + " W"
-
-        m = re.search(r"Total Power Drawn\s*:\s*([\d\.]+)\s*W", pwr_out)
-        if m: inv["poe_used"] = m.group(1) + " W"
-
-        m = re.search(r"Total Remaining Power\s*:\s*([\d\.]+)\s*W", pwr_out)
-        if m: inv["poe_remaining"] = m.group(1) + " W"
-
+        for pat, key in [
+            (r"Total Available Power\s*:\s*([\d\.]+)", "poe_total"),
+            (r"Total Power Drawn\s*:\s*([\d\.]+)", "poe_used"),
+            (r"Total Remaining Power\s*:\s*([\d\.]+)", "poe_remaining"),
+        ]:
+            m = re.search(pat, pwr_out)
+            if m:
+                inv[key] = f"{m.group(1)} W"
     except:
         pass
 
-    # TRUNKS
+    # ---------------- TRUNKS ----------------
     try:
         t_out = conn.send_command("show trunks")
         trunks = []
         for line in t_out.splitlines():
-            parts = line.split()
-            if len(parts) < 2:
-                continue
-
-            port = parts[0]
-            m_grp = re.search(r"\bTrk\d+\b", line)
-            if m_grp:
-                trunks.append({"port": port, "group": m_grp.group(0)})
-
+            m = re.search(r"^(\S+).*\b(Trk\d+)\b", line)
+            if m:
+                trunks.append({"port": m.group(1), "group": m.group(2)})
         if trunks:
             inv["trunks"] = trunks
-
     except:
         pass
 
-    # ------------------------------------------------------------
-    # INTERFACE STATUS / SPEED / DESCRIPTION (FINAL FIXED VERSION)
-    # ------------------------------------------------------------
+    # ---------------- INTERFACES ----------------
     if vendor_key == "arubaos-switch":
         try:
             iface_out = conn.send_command("show interfaces brief")
@@ -212,33 +185,20 @@ def collect_inventory(conn, vendor_key):
 
             for raw_line in iface_out.splitlines():
                 line = raw_line.strip()
-                if not line or not line[0].isdigit():
+                if not line:
                     continue
 
                 parts = line.split()
-                # Expected structure after splitting:
-                # 0: port
-                # 1: type
-                # 2: |
-                # 3: intrusion alert (No)
-                # 4: enabled (Yes)
-                # 5: status (Up/Down)
-                # 6: mode/speed (1000FDx)
-
-                if len(parts) < 7:
+                if not parts[0].isdigit() or len(parts) < 7:
                     continue
 
                 port = parts[0]
-                status = parts[5]
-                speed = parts[6]
-
                 inv["interfaces"][port] = {
-                    "status": status,
-                    "speed": speed,
+                    "status": parts[5],
+                    "speed": parts[6],
                     "description": ""
                 }
 
-            # Pull descriptions individually
             for port in inv["interfaces"]:
                 desc_out = conn.send_command(f"show interfaces {port}")
                 m = re.search(r"Name\s*:\s*(.+)", desc_out)
@@ -248,10 +208,7 @@ def collect_inventory(conn, vendor_key):
         except Exception as e:
             inv["interface_error"] = str(e)
 
-
-    # ------------------------------------------------------------
-    # VLAN / PORT MEMBERSHIP
-    # ------------------------------------------------------------
+    # ---------------- VLAN / PORT MAP ----------------
     try:
         rc = conn.send_command("show running-config")
         inv["vlans_detail"] = {}
@@ -259,11 +216,9 @@ def collect_inventory(conn, vendor_key):
         current_vlan = None
 
         for line in rc.splitlines():
-            line = line.rstrip()
-
-            m_vlan = re.match(r"^vlan\s+(\d+)", line)
-            if m_vlan:
-                current_vlan = m_vlan.group(1)
+            m = re.match(r"^vlan\s+(\d+)", line)
+            if m:
+                current_vlan = m.group(1)
                 inv["vlans_detail"].setdefault(current_vlan, {
                     "name": None,
                     "ip": None,
@@ -283,28 +238,21 @@ def collect_inventory(conn, vendor_key):
 
             m = re.search(r'ip address\s+(\S+)\s+(\S+)', line)
             if m:
-                ip = m.group(1)
-                mask = m.group(2)
-                cidr = mask_to_cidr(mask)
-                inv["vlans_detail"][current_vlan]["ip"] = f"{ip}/{cidr}" if cidr else ip
+                cidr = mask_to_cidr(m.group(2))
+                inv["vlans_detail"][current_vlan]["ip"] = f"{m.group(1)}/{cidr}"
                 inv["vlans_detail"][current_vlan]["l3"] = True
                 inv["vlans_detail"][current_vlan]["l2_only"] = False
 
-            m = re.search(r'untagged\s+(.+)$', line)
-            if m:
-                ports = expand_ports(m.group(1))
-                for p in ports:
-                    inv["vlans_detail"][current_vlan]["untagged"].append(p)
-                    inv["port_vlans"].setdefault(p, {"tagged": [], "untagged": None})
-                    inv["port_vlans"][p]["untagged"] = current_vlan
-
-            m = re.search(r'tagged\s+(.+)$', line)
-            if m:
-                ports = expand_ports(m.group(1))
-                for p in ports:
-                    inv["vlans_detail"][current_vlan]["tagged"].append(p)
-                    inv["port_vlans"].setdefault(p, {"tagged": [], "untagged": None})
-                    inv["port_vlans"][p]["tagged"].append(current_vlan)
+            for tag_type in ("untagged", "tagged"):
+                m = re.search(rf"{tag_type}\s+(.+)$", line)
+                if m:
+                    for p in expand_ports(m.group(1)):
+                        inv["vlans_detail"][current_vlan][tag_type].append(p)
+                        inv["port_vlans"].setdefault(p, {"untagged": None, "tagged": []})
+                        if tag_type == "untagged":
+                            inv["port_vlans"][p]["untagged"] = current_vlan
+                        else:
+                            inv["port_vlans"][p]["tagged"].append(current_vlan)
 
     except Exception as e:
         inv["vlan_error"] = str(e)
@@ -317,9 +265,8 @@ def collect_inventory(conn, vendor_key):
 # ------------------------------------------------------------
 
 def collect_lldp(host, username, password):
-    """Two-stage SSH — detect vendor, then collect LLDP + inventory."""
+    """Detect vendor, collect inventory, then LLDP neighbors."""
 
-    # PASS 1 — detect vendor
     base = {
         "device_type": "terminal_server",
         "host": host,
@@ -329,12 +276,10 @@ def collect_lldp(host, username, password):
 
     conn = ConnectHandler(**base)
     banner = conn.find_prompt()
-
     try:
         banner += conn.send_command("show version")
     except:
         pass
-
     conn.disconnect()
 
     vendor_key = detect_vendor(banner)
@@ -345,27 +290,21 @@ def collect_lldp(host, username, password):
         f"[yellow]{vendor_key}[/yellow] → [green]{device_type}[/green]"
     )
 
-    # PASS 2 — real driver
-    device = {
-        "device_type": device_type,
-        "host": host,
-        "username": username,
-        "password": password,
-    }
+    conn = ConnectHandler(
+        device_type=device_type,
+        host=host,
+        username=username,
+        password=password,
+    )
 
-    conn = ConnectHandler(**device)
-
-    # Disable paging
     for cmd in ("no page", "terminal length 0"):
         try:
             conn.send_command(cmd)
         except:
             pass
 
-    # Collect inventory
     inventory = collect_inventory(conn, vendor_key)
 
-    # Collect LLDP detail
     raw = conn.send_command("show lldp info remote-device detail")
     conn.disconnect()
 
@@ -380,31 +319,29 @@ def collect_lldp(host, username, password):
                 neighbors.append(current)
             current = {}
 
-        m = re.search(r"Local Port\s*:\s*(\S+)", line)
-        if m:
+        if m := re.search(r"Local Port\s*:\s*(\S+)", line):
             current["local_port"] = m.group(1)
 
-        m = re.search(r"ChassisId\s*:\s*(\S+)", line)
-        if m:
+        if m := re.search(r"ChassisId\s*:\s*(\S+)", line):
             current["chassis_id"] = m.group(1)
 
-        m = re.search(r"SysName\s*:\s*(.+)$", line)
-        if m:
+        if m := re.search(r"SysName\s*:\s*(.+)", line):
             current["system_name"] = m.group(1).strip()
 
-        m = re.search(r"PortDescr\s*:\s*(.+)$", line)
-        if m:
-            pd = m.group(1).strip()
-            current["port_descr"] = pd if pd else "—"
+        if m := re.search(r"PortId\s*:\s*(.+)", line):
+            if m.group(1).strip():
+                current["port_descr"] = m.group(1).strip()
 
-        # Handling IPv4 mgmt IP format
+        if m := re.search(r"PortDescr\s*:\s*(.+)", line):
+            if "port_descr" not in current:
+                current["port_descr"] = m.group(1).strip() or "—"
+
         if line.lower().startswith("type") and "ipv4" in line.lower():
             current["_expect_ipv4"] = True
             continue
 
         if current.get("_expect_ipv4") and line.lower().startswith("address"):
-            ip = line.split(":")[-1].strip()
-            current["mgmt_ip"] = ip
+            current["mgmt_ip"] = line.split(":")[-1].strip()
             del current["_expect_ipv4"]
 
     if current:

@@ -1,3 +1,5 @@
+#=== main.py ===
+
 import argparse
 from src.lldp_collector import collect_lldp
 from src.utils import (
@@ -95,6 +97,38 @@ def format_lacp(inv, neighbors):
     section("LACP STATUS")
     lacp_table(lacp_struct)
 
+def vlan1_risk_check(inv):
+    vlans = inv.get("vlans_detail", {})
+    v1 = vlans.get("1")
+
+    if not v1:
+        return
+
+    untagged = v1.get("untagged", [])
+    tagged = v1.get("tagged", [])
+
+    if not tagged and not untagged:
+        return
+
+    section("NETWORK RISK WARNING")
+
+    console.print("[bold red]⚠ VLAN 1 Risk Detected[/bold red]")
+
+    if tagged:
+        console.print("  • VLAN 1 is tagged on one or more ports")
+
+    if untagged:
+        console.print(f"  • VLAN 1 is untagged on {len(untagged)} ports")
+
+    if tagged and untagged:
+        console.print("  • VLAN 1 is used as both tagged and untagged (native + transit)")
+
+    console.print(
+        "\n[dim]Recommendation:[/dim] "
+        "Limit VLAN 1 to switch-local control/management only. "
+        "Move access ports and trunks to explicit VLANs."
+    )
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -107,6 +141,7 @@ def main():
     inv = results["inventory"]
 
     format_inventory(inv)
+    vlan1_risk_check(inv)
     format_lacp(inv, results["neighbors"])
     format_vlan_summary(inv)
     format_port_vlan_table(inv)
